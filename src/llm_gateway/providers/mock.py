@@ -50,6 +50,10 @@ class MockClient:
         self._clock = clock or time.monotonic
 
         self.calls = 0
+        self.in_flight = 0
+        self.peak_in_flight = 0
+        # Test hook: drop this many responses from each batch reply.
+        self.drop_responses = 0
         self.batch_calls = 0
         self.batch_sizes: list[int] = []
         # Timestamps of accepted calls, for simulating the provider's own
@@ -87,8 +91,19 @@ class MockClient:
 
     # -- API -----------------------------------------------------------
 
+    def _enter(self) -> None:
+        self.in_flight += 1
+        self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+
     async def complete(self, request: LLMRequest) -> LLMResponse:
         self.calls += 1
+        self._enter()
+        try:
+            return await self._complete(request)
+        finally:
+            self.in_flight -= 1
+
+    async def _complete(self, request: LLMRequest) -> LLMResponse:
         if self.latency:
             await asyncio.sleep(self.latency)
 
@@ -118,6 +133,16 @@ class MockClient:
         )
 
     async def complete_batch(self, requests: list[LLMRequest]) -> list[LLMResponse]:
+        self._enter()
+        try:
+            responses = await self._complete_batch(requests)
+        finally:
+            self.in_flight -= 1
+        if self.drop_responses:
+            responses = responses[: max(0, len(responses) - self.drop_responses)]
+        return responses
+
+    async def _complete_batch(self, requests: list[LLMRequest]) -> list[LLMResponse]:
         self.batch_calls += 1
         self.batch_sizes.append(len(requests))
         if self.latency:
@@ -167,6 +192,7 @@ def MockProvider(
     rpm_limit: float = 600,
     tpm_limit: float = 150_000,
     priority: int = 0,
+    max_concurrency: int = 64,
     failure_threshold: int = 5,
     recovery_timeout: float = 30.0,
     client: MockClient | None = None,
@@ -194,6 +220,7 @@ def MockProvider(
         rpm_limit=rpm_limit,
         tpm_limit=tpm_limit,
         priority=priority,
+        max_concurrency=max_concurrency,
         failure_threshold=failure_threshold,
         recovery_timeout=recovery_timeout,
     )

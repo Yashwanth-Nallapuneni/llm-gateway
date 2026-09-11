@@ -7,6 +7,7 @@ results back through the futures held by each queue entry.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 
 from .batching import Batcher
@@ -148,9 +149,15 @@ class LLMGateway:
         satisfies the union of what its members need. Taking the max context
         rather than the sum because providers size batch items independently.
         """
-        return LLMRequest(
-            prompt="",
-            max_tokens=max(q.request.max_tokens for q in batch),
+        # Start from the member with the largest context footprint, so the
+        # router's context-window check sees a real prompt and a real
+        # max_tokens. The old version built an empty prompt and stuffed the
+        # total token estimate into `max_tokens`, which only worked by accident
+        # and would have reported a nonsense max_tokens to anything else that
+        # read it (a cost estimate, a log line).
+        largest = max(batch, key=lambda q: q.request.estimated_total_tokens())
+        return dataclasses.replace(
+            largest.request,
             needs_logprobs=any(q.request.needs_logprobs for q in batch),
             needs_strict_json=any(q.request.needs_strict_json for q in batch),
         )
@@ -158,10 +165,6 @@ class LLMGateway:
     async def _dispatch(self, batch: list[QueuedRequest]) -> None:
         try:
             composite = self._composite(batch)
-            # Context sizing is per-item, so check the largest member too.
-            composite.max_tokens = max(
-                q.request.estimated_total_tokens() for q in batch
-            )
             candidates = self.router.select_all(composite, self.providers)
 
             if not candidates:
@@ -183,9 +186,8 @@ class LLMGateway:
                     # is the signal to move on rather than to give up.
                     continue
 
-                for entry, response in zip(batch, responses):
+                for entry, response in zip(batch, responses, strict=True):
                     if not entry.future.done():
-                        response.latency_s = time.monotonic() - entry.enqueued_at
                         entry.future.set_result(response)
                 return
 
@@ -223,12 +225,29 @@ class LLMGateway:
             )
 
             self.metrics.record_attempt(provider.name)
-            started = time.monotonic()
             try:
-                if len(requests) == 1:
-                    responses = [await provider.complete(requests[0])]
-                else:
-                    responses = await provider.complete_batch(requests)
+                # The concurrency slot is held only around the network call --
+                # not across the rate-limiter wait above, and not across the
+                # retry sleep below. Holding it while sleeping would let a few
+                # failing requests occupy every slot doing nothing, starving
+                # healthy traffic behind them.
+                async with provider.concurrency:
+                    if len(requests) == 1:
+                        responses = [await provider.complete(requests[0])]
+                    else:
+                        responses = await provider.complete_batch(requests)
+
+                # A provider that answers a batch of N with fewer than N
+                # responses would otherwise leave the unmatched callers
+                # awaiting futures nobody resolves. Treat it as a provider
+                # failure so it is retried, counted, and fed to the breaker
+                # like any other bad response. status=None makes it retryable.
+                if len(responses) != len(requests):
+                    raise ProviderError(
+                        f"{provider.name} returned {len(responses)} responses "
+                        f"for {len(requests)} requests",
+                        provider=provider.name,
+                    )
             except Exception as exc:  # noqa: BLE001
                 provider.breaker.record_failure()
                 self.metrics.record_failure(
@@ -244,14 +263,19 @@ class LLMGateway:
                 await asyncio.sleep(delay)
                 continue
 
-            elapsed = time.monotonic() - started
             provider.breaker.record_success()
             self.metrics.record_batch(provider.name, len(requests))
-            for response in responses:
+            now = time.monotonic()
+            for entry, response in zip(batch, responses, strict=True):
                 response.attempts = attempt + 1
+                # End-to-end: from the moment the caller submitted, through
+                # queueing, batching, rate-limiter waits and retries. This is
+                # the latency the caller actually experiences; provider call
+                # time alone hides exactly the delays this library introduces.
+                response.latency_s = now - entry.enqueued_at
                 self.metrics.record_success(
                     provider.name,
-                    elapsed,
+                    response.latency_s,
                     provider.estimated_cost(
                         response.input_tokens, response.output_tokens
                     ),

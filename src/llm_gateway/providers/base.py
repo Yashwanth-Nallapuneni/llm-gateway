@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable
 
 from ..breaker import CircuitBreaker
@@ -26,6 +27,7 @@ class Provider:
         rpm_limit: float = 600,
         tpm_limit: float = 150_000,
         priority: int = 0,
+        max_concurrency: int = 64,
         *,
         failure_threshold: int = 5,
         recovery_timeout: float = 30.0,
@@ -39,6 +41,15 @@ class Provider:
         self.tpm_limit = tpm_limit
         # Operator preference, used only as the last tiebreak in routing.
         self.priority = priority
+
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be >= 1")
+        self.max_concurrency = max_concurrency
+        # Rate and concurrency are different limits. RPM/TPM bound how much you
+        # send per minute; this bounds how many calls are open at once. Some
+        # hosts (DeepInfra: concurrent requests per model) limit only the
+        # latter, and without a cap a large sweep opens unbounded sockets.
+        self.concurrency = asyncio.Semaphore(max_concurrency)
 
         self.limiter = ProviderLimiter(rpm_limit, tpm_limit, clock=clock, sleep=sleep)
         self.breaker = CircuitBreaker(

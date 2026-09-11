@@ -229,3 +229,81 @@ async def test_batches_do_not_mix_capability_requirements_end_to_end():
             assert resp.provider == "fancy"
     # The cheap provider must still get the bulk of the work.
     assert sum(r.provider == "plain" for r in responses) == 90
+
+
+# --------------------------------------------------------------------------
+# Regression tests for the four gaps fixed after the first build
+# --------------------------------------------------------------------------
+
+
+async def test_concurrency_cap_bounds_simultaneous_calls():
+    client = MockClient("capped", latency=0.02)
+    provider = MockProvider("capped", client=client, max_concurrency=2)
+    gw = LLMGateway(
+        providers=[provider],
+        batcher=Batcher(max_batch_size=1, max_wait_ms=1),
+        retry=fast_retry(),
+    )
+    async with gw:
+        await gw.submit_many([LLMRequest(f"p{i}") for i in range(20)])
+    assert client.peak_in_flight == 2
+
+
+async def test_short_batch_response_fails_over_instead_of_hanging():
+    short = MockClient("short")
+    short.drop_responses = 1
+    broken = MockProvider("short", client=short, cost_per_1k_output=0.01)
+    backup = MockProvider("backup", cost_per_1k_output=5.0)
+    gw = LLMGateway(
+        providers=[broken, backup],
+        batcher=Batcher(max_batch_size=4, max_wait_ms=20),
+        retry=fast_retry(max_attempts=2),
+    )
+    async with gw:
+        responses = await asyncio.wait_for(
+            gw.submit_many([LLMRequest(f"p{i}") for i in range(4)]), timeout=2.0
+        )
+    assert len(responses) == 4
+    assert all(r.provider == "backup" for r in responses)
+    assert gw.metrics._p("short").failures_by_class["transport"] >= 1
+
+
+async def test_reported_latency_is_end_to_end_not_call_time():
+    # The provider answers instantly; all the delay is the batcher's wait.
+    gw = LLMGateway(
+        providers=[MockProvider("a")],
+        batcher=Batcher(max_batch_size=100, max_wait_ms=60),
+        retry=fast_retry(),
+    )
+    gw.batcher._in_flight = lambda: 1  # force the batcher to wait out the window
+    async with gw:
+        resp = await gw.submit(LLMRequest("hi"))
+    assert resp.latency_s >= 0.05
+    assert min(gw.metrics._p("a").latencies) >= 0.05
+
+
+def test_composite_request_uses_a_real_member_and_ors_capabilities():
+    loop = asyncio.new_event_loop()
+    try:
+        gw = LLMGateway(providers=[MockProvider("a")])
+        from llm_gateway.types import QueuedRequest
+
+        small = LLMRequest("x" * 40, max_tokens=10, needs_logprobs=True)
+        big = LLMRequest("y" * 4000, max_tokens=500)
+        batch = [
+            QueuedRequest(request=r, future=loop.create_future(), enqueued_at=0.0)
+            for r in (small, big)
+        ]
+        composite = gw._composite(batch)
+    finally:
+        loop.close()
+
+    assert composite.max_tokens == 500  # a real max_tokens, not a token total
+    assert composite.estimated_total_tokens() == big.estimated_total_tokens()
+    assert composite.needs_logprobs is True
+    assert big.needs_logprobs is False  # members are not mutated
+
+
+def test_max_concurrency_must_be_positive():
+    with pytest.raises(ValueError):
+        MockProvider("bad", max_concurrency=0)
