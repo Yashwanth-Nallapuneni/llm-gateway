@@ -27,6 +27,22 @@ class GroqClient(OpenAICompatibleClient):
     so logprobs_params() here is dead code in normal operation, kept only so
     a caller who constructs GroqClient directly (bypassing the router) gets
     a real request body instead of a silent no-op.
+
+    Reasoning-model trap: some Groq-hosted models (e.g. `openai/gpt-oss-20b`,
+    `openai/gpt-oss-120b`, `openai/gpt-oss-safeguard-20b`) spend part of the
+    completion's token budget on an internal `reasoning` field before they
+    ever emit `content`. At a small `max_tokens` the entire budget can go to
+    reasoning, and the API still returns a normal 200 response -- just with
+    `content: ""` and `finish_reason: "length"`. `LLMResponse` (types.py)
+    has no `finish_reason` field, so that distinction does not survive the
+    trip through `OpenAICompatibleClient`'s response parsing (http.py): a
+    reasoning model that burned its whole budget thinking and a model that
+    legitimately produced nothing both surface identically as
+    `response.text == ""`. Fixing that properly means threading
+    `finish_reason` through http.py and types.py, which is out of scope
+    here. If you get mysteriously empty completions from a Groq model,
+    raise `max_tokens` and check whether the model is a reasoning model
+    before assuming the library itself is broken.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -69,16 +85,45 @@ def _wire_header_sync(
 def groq_provider(
     api_key: str,
     *,
-    model: str = "llama-3.3-70b-versatile",
+    # WARNING -- this default WILL rot. Groq deprecates and removes models
+    # regularly (this project shipped with `llama-3.3-70b-versatile` as the
+    # default, which no longer exists on Groq at all -- it does not appear
+    # in a live `GET /openai/v1/models` response any more). Before trusting
+    # this default, check what is actually live:
+    #
+    #   curl -H "Authorization: Bearer $GROQ_API_KEY" \
+    #       https://api.groq.com/openai/v1/models
+    #
+    # `allam-2-7b` was verified live on 2026-09-18: it appeared in that
+    # models listing, is small (7B) and cheap, is NOT a reasoning model, and
+    # returned real, non-empty `content` at `max_tokens=16` (many of the
+    # other available chat models on Groq are reasoning models -- e.g.
+    # `openai/gpt-oss-20b` -- and burn the entire small token budget on
+    # internal reasoning, returning empty content instead; see the
+    # `GroqClient` docstring above). It will not stay current forever --
+    # `tests/test_live_groq.py::test_default_model_is_live` exists precisely
+    # to catch the day it goes stale.
+    model: str = "allam-2-7b",
     name: str = "groq",
     default_headers: Mapping[str, str] | None = None,
     timeout: float = 60.0,
     client: AsyncLLMClient | None = None,
     on_headers: Callable[[Mapping[str, str]], None] | None = None,
-    # Groq's free tier (as of writing) is roughly 30 requests/minute and
-    # 6,000 tokens/minute for the popular 70B models; paid tiers raise both
-    # substantially. These are deliberately conservative defaults -- a
-    # caller on a paid plan should override them, not the other way around.
+    # Groq's per-model rate limits vary a lot and are not published as a
+    # single stable number -- these two defaults are necessarily an
+    # approximation, not a guarantee for whatever model you actually pass.
+    # Observed live (2026-09-18) for the current default, `allam-2-7b`:
+    # ~7000 requests/min and ~6000 tokens/min on the free tier. rpm is set
+    # well below that observed value on purpose: tpm is the tighter
+    # constraint at 6,000/min regardless (a handful of requests can exhaust
+    # it long before 7000 requests would), and larger/popular models on
+    # Groq (e.g. the 70B-class ones) have historically reported much lower
+    # rpm than this -- around 30/min. Rather than pick one model's numbers
+    # and silently mislead callers using a different model, this stays
+    # conservative on rpm; a caller who knows their model's real limits
+    # (via `GET /openai/v1/models` or the `x-ratelimit-*` response headers,
+    # which `on_headers`/`_wire_header_sync` sync into the limiter live
+    # anyway) should override both, not rely on these as ground truth.
     rpm_limit: float = 30,
     tpm_limit: float = 6_000,
     priority: int = 0,

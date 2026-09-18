@@ -18,6 +18,7 @@ import pytest
 from llm_gateway import LLMGateway, LLMRequest, ProviderError, RateLimitError, RetryPolicy
 from llm_gateway.providers.groq import GROQ_BASE_URL, GroqClient, groq_provider
 from llm_gateway.providers.http import OpenAICompatibleClient, parse_retry_after
+from llm_gateway.providers.mock import MockClient
 from llm_gateway.providers.openrouter import (
     OPENROUTER_BASE_URL,
     OpenRouterClient,
@@ -31,8 +32,11 @@ def make_client(handler, *, base_url: str = "https://example.test/v1", **kwargs)
 
 
 def success_body(text: str = "hello there", *, prompt_tokens=10, completion_tokens=5,
-                  logprobs=None, model="test-model") -> dict:
+                  logprobs=None, model="test-model", finish_reason="stop",
+                  omit_finish_reason=False) -> dict:
     choice: dict = {"message": {"role": "assistant", "content": text}, "index": 0}
+    if not omit_finish_reason:
+        choice["finish_reason"] = finish_reason
     if logprobs is not None:
         choice["logprobs"] = {"content": [{"token": t, "logprob": lp} for t, lp in logprobs]}
     return {
@@ -128,6 +132,110 @@ async def test_strict_json_sets_response_format():
     )
     await client.complete(LLMRequest(prompt="hi", needs_strict_json=True))
     await client.aclose()
+
+
+# --------------------------------------------------------------------------
+# finish_reason
+# --------------------------------------------------------------------------
+
+
+async def test_finish_reason_stop_is_parsed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=success_body("hello there", finish_reason="stop"))
+
+    http_client = make_client(handler)
+    client = OpenAICompatibleClient(
+        base_url="https://example.test/v1", api_key="k", model="m", client=http_client
+    )
+    resp = await client.complete(LLMRequest(prompt="hi"))
+    assert resp.finish_reason == "stop"
+    assert resp.was_truncated is False
+    await client.aclose()
+
+
+async def test_finish_reason_length_is_parsed_and_exposed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=success_body("partial answ", finish_reason="length"))
+
+    http_client = make_client(handler)
+    client = OpenAICompatibleClient(
+        base_url="https://example.test/v1", api_key="k", model="m", client=http_client
+    )
+    resp = await client.complete(LLMRequest(prompt="hi", max_tokens=16))
+    assert resp.finish_reason == "length"
+    assert resp.was_truncated is True
+    await client.aclose()
+
+
+async def test_finish_reason_absent_yields_none_without_raising():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=success_body("hello", omit_finish_reason=True))
+
+    http_client = make_client(handler)
+    client = OpenAICompatibleClient(
+        base_url="https://example.test/v1", api_key="k", model="m", client=http_client
+    )
+    resp = await client.complete(LLMRequest(prompt="hi"))
+    assert resp.finish_reason is None
+    assert resp.was_truncated is False
+    await client.aclose()
+
+
+async def test_reasoning_model_trap_distinguishable_from_legitimate_empty_answer():
+    """A reasoning model starved of max_tokens returns content: "" with
+    finish_reason: "length". That must be distinguishable from a model that
+    legitimately produced nothing and stopped normally -- this is the whole
+    point of threading finish_reason through at all.
+    """
+
+    def truncated_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=success_body("", finish_reason="length"))
+
+    def legitimate_empty_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=success_body("", finish_reason="stop"))
+
+    truncated_client = OpenAICompatibleClient(
+        base_url="https://example.test/v1",
+        api_key="k",
+        model="m",
+        client=make_client(truncated_handler),
+    )
+    legitimate_client = OpenAICompatibleClient(
+        base_url="https://example.test/v1",
+        api_key="k",
+        model="m",
+        client=make_client(legitimate_empty_handler),
+    )
+
+    truncated = await truncated_client.complete(LLMRequest(prompt="hi", max_tokens=16))
+    legitimate = await legitimate_client.complete(LLMRequest(prompt="hi"))
+
+    assert truncated.text == "" and legitimate.text == ""
+    assert truncated.was_truncated is True
+    assert legitimate.was_truncated is False
+
+    await truncated_client.aclose()
+    await legitimate_client.aclose()
+
+
+async def test_mock_client_defaults_finish_reason_to_stop():
+    client = MockClient(name="mock")
+    resp = await client.complete(LLMRequest(prompt="hi"))
+    assert resp.finish_reason == "stop"
+    assert resp.was_truncated is False
+
+
+async def test_mock_client_can_simulate_truncation():
+    client = MockClient(name="mock", finish_reason="length")
+    resp = await client.complete(LLMRequest(prompt="hi", max_tokens=16))
+    assert resp.finish_reason == "length"
+    assert resp.was_truncated is True
+
+    batch = await MockClient(name="mock", finish_reason="length").complete_batch(
+        [LLMRequest(prompt="hi", max_tokens=16)]
+    )
+    assert batch[0].finish_reason == "length"
+    assert batch[0].was_truncated is True
 
 
 # --------------------------------------------------------------------------

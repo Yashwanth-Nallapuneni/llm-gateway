@@ -17,6 +17,25 @@ One command reproduces everything:
 
 See benchmarks/README.md for methodology, the stated hypothesis, and
 "Threats to validity" -- read that before trusting any number this prints.
+
+Live mode (--provider groq) runs the SAME two arms -- same code paths,
+same metric collection -- against the real Groq API instead of the
+simulated server. It exists to answer a different question than the
+simulated run: not "does the gateway behave the way the token-bucket math
+says it should" (the simulated run already answers that, exactly, because
+it controls the server), but "does this actually work end to end against a
+real provider's real HTTP behaviour." It is not a bigger or more trustworthy
+version of the simulated benchmark -- it is a much smaller, much noisier
+sanity check, deliberately kept tiny by a hard-coded call budget:
+
+    GROQ_API_KEY=$(cat ~/.groq_key) python3 benchmarks/bench.py \\
+        --provider groq --model allam-2-7b --n-prompts 50 --runs 3 --markdown
+
+Every live call is capped at --max-tokens 16 by convention (kept small on
+purpose to stay well inside free-tier token budgets) and the whole run
+refuses to start above --max-live-calls (default 400) planned calls. See
+benchmarks/README.md's "Live results" section for what a 50-prompt run can
+and cannot tell you about rate limiting.
 """
 
 from __future__ import annotations
@@ -148,15 +167,139 @@ class SimClient(MockClient):
 
 
 # ---------------------------------------------------------------------------
+# Live provider mode (real Groq API)
+# ---------------------------------------------------------------------------
+
+
+class LiveCallBudgetExceeded(RuntimeError):
+    """Raised instead of making another live HTTP call once the hard
+    per-invocation ceiling (--max-live-calls) is reached.
+
+    Deliberately not a ProviderError: RetryPolicy.should_retry() only
+    retries ProviderError/known transport exceptions, so this is never
+    retried -- it marks the in-flight prompt as failed and stops spending
+    real quota, rather than a retry storm burning through the ceiling
+    while "retrying into the wall."
+    """
+
+
+class LiveCallBudget:
+    """Shared across every arm and every run of one live invocation.
+
+    Counts real HTTP calls about to be made, not prompts -- so it also
+    catches retries, which a purely static preflight check (planned =
+    n_prompts * runs * 2) cannot.
+    """
+
+    def __init__(self, max_calls: int) -> None:
+        self.max_calls = max_calls
+        self.used = 0
+
+    def take(self) -> None:
+        # No lock needed: asyncio is single-threaded/cooperative and this
+        # method never awaits, so no other task can interleave between the
+        # check and the increment.
+        if self.used >= self.max_calls:
+            raise LiveCallBudgetExceeded(
+                f"live call budget exceeded ({self.max_calls} calls total this "
+                "invocation) -- stopping rather than continuing to spend real "
+                "provider quota. See --max-live-calls."
+            )
+        self.used += 1
+
+
+class LiveCallCounter:
+    """Wraps a real AsyncLLMClient (GroqClient, here) with the same
+    call-level counters SimClient provides for the simulated server
+    (a ServerCallMetrics: calls / 429s / 5xx), so run_naive() and
+    run_gateway() work against a live provider completely unmodified --
+    both only ever touch `.complete()` and `.server_metrics`.
+
+    Also where the live call budget is actually enforced: `take()` runs
+    before the network call, not after, so a call that would exceed the
+    ceiling never goes out.
+    """
+
+    def __init__(self, client: Any, budget: LiveCallBudget) -> None:
+        self._client = client
+        self._budget = budget
+        self.server_metrics = ServerCallMetrics()
+
+    async def complete(self, request: LLMRequest) -> LLMResponse:
+        self._budget.take()
+        self.server_metrics.calls += 1
+        try:
+            return await self._client.complete(request)
+        except ProviderError as exc:
+            self._tally(exc)
+            raise
+
+    def _tally(self, exc: ProviderError) -> None:
+        m = self.server_metrics
+        if exc.status == 429:
+            m.status_429 += 1
+        elif exc.status is not None and exc.status >= 500:
+            m.status_5xx += 1
+        else:
+            m.other_fail += 1
+
+    async def aclose(self) -> None:
+        aclose = getattr(self._client, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
+def build_live_groq_client(model: str, api_key: str) -> Any:
+    """Lazy import: the `[http]` extra (httpx) is only required for live
+    mode, not for the simulated benchmark this file otherwise runs entirely
+    offline. Importing groq.py at module scope would make `import bench`
+    fail without httpx installed even for a purely simulated run."""
+    from llm_gateway.providers.groq import GROQ_BASE_URL, GroqClient
+
+    return GroqClient(base_url=GROQ_BASE_URL, api_key=api_key, model=model)
+
+
+def build_live_groq_provider(
+    model: str,
+    api_key: str,
+    client: Any,
+    *,
+    rpm_limit: float,
+    tpm_limit: float,
+    max_concurrency: int,
+) -> Any:
+    from llm_gateway.providers.groq import groq_provider
+
+    # cost_per_1k_* left at their groq_provider default (0.0): Groq's free
+    # tier bills nothing, and this run's own metrics report tokens instead
+    # of a dollar figure precisely because a real dollar cost isn't in play.
+    return groq_provider(
+        api_key,
+        model=model,
+        client=client,
+        rpm_limit=rpm_limit,
+        tpm_limit=tpm_limit,
+        max_concurrency=max_concurrency,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Workload
 # ---------------------------------------------------------------------------
 
 
-def make_prompts(n: int, seed: int, max_tokens: int) -> list[LLMRequest]:
+def make_prompts(
+    n: int,
+    seed: int,
+    max_tokens: int,
+    *,
+    words_min: int = 5,
+    words_max: int = 40,
+) -> list[LLMRequest]:
     rng = random.Random(seed)
     return [
         LLMRequest(
-            prompt=f"Summarize item #{i}: " + "word " * rng.randint(5, 40),
+            prompt=f"Summarize item #{i}: " + "word " * rng.randint(words_min, words_max),
             max_tokens=max_tokens,
         )
         for i in range(n)
@@ -186,6 +329,11 @@ class RunResult:
     failures: int
     latencies_s: list[float] = field(default_factory=list)
     cost_usd: float = 0.0
+    # Populated in both modes, but the metric that matters in live mode:
+    # Groq's free tier is $0, so cost_usd is always 0 there and tokens are
+    # the only real measure of "how much work this arm actually did."
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -206,10 +354,12 @@ async def run_naive(
     latencies: list[float] = []
     failures = 0
     cost = 0.0
+    input_tokens = 0
+    output_tokens = 0
     clock = time.monotonic
 
     async def one(req: LLMRequest) -> None:
-        nonlocal failures, cost
+        nonlocal failures, cost, input_tokens, output_tokens
         start = clock()
         attempt = 0
         while True:
@@ -230,6 +380,8 @@ async def run_naive(
                 continue
             latencies.append(clock() - start)
             cost += _cost(resp, cost_per_1k_input, cost_per_1k_output)
+            input_tokens += resp.input_tokens
+            output_tokens += resp.output_tokens
             return
 
     t0 = clock()
@@ -247,6 +399,8 @@ async def run_naive(
         failures=failures,
         latencies_s=latencies,
         cost_usd=cost,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -268,25 +422,33 @@ async def run_gateway(
     cost_per_1k_input: float,
     cost_per_1k_output: float,
     batch_endpoint: bool = False,
+    provider: Any | None = None,
 ) -> RunResult:
-    # Default False on purpose. Neither Groq nor OpenRouter -- the two
-    # providers this library actually ships adapters for -- has a synchronous
-    # multi-prompt endpoint, so counting a 16-prompt batch as ONE request
-    # would credit the gateway with a saving no real deployment can collect.
-    # With it False the gateway still groups requests for rate-limit
-    # accounting and dispatches them concurrently, which is what really
-    # happens against a chat API. --batch-endpoint models the other case:
-    # a provider that genuinely accepts many prompts per call.
-    provider = MockProvider(
-        "sim",
-        client=server,
-        supports_batching=batch_endpoint,
-        rpm_limit=rpm_limit,
-        tpm_limit=tpm_limit,
-        cost_per_1k_input=cost_per_1k_input,
-        cost_per_1k_output=cost_per_1k_output,
-        max_concurrency=64,
-    )
+    # `provider` lets a caller hand in an already-built llm_gateway.Provider
+    # instead of the simulated MockProvider below -- this is how live mode
+    # (run_all, --provider groq) reuses this exact function against a real
+    # Provider wrapping the real Groq API, with server.server_metrics still
+    # the source of requests_sent/429/5xx (see LiveCallCounter).
+    if provider is None:
+        # Default False on purpose. Neither Groq nor OpenRouter -- the two
+        # providers this library actually ships adapters for -- has a
+        # synchronous multi-prompt endpoint, so counting a 16-prompt batch as
+        # ONE request would credit the gateway with a saving no real
+        # deployment can collect. With it False the gateway still groups
+        # requests for rate-limit accounting and dispatches them
+        # concurrently, which is what really happens against a chat API.
+        # --batch-endpoint models the other case: a provider that genuinely
+        # accepts many prompts per call.
+        provider = MockProvider(
+            "sim",
+            client=server,
+            supports_batching=batch_endpoint,
+            rpm_limit=rpm_limit,
+            tpm_limit=tpm_limit,
+            cost_per_1k_input=cost_per_1k_input,
+            cost_per_1k_output=cost_per_1k_output,
+            max_concurrency=64,
+        )
     gw = LLMGateway(
         providers=[provider],
         batcher=Batcher(
@@ -312,6 +474,8 @@ async def run_gateway(
         for r in results
         if isinstance(r, LLMResponse)
     )
+    input_tokens = sum(r.input_tokens for r in results if isinstance(r, LLMResponse))
+    output_tokens = sum(r.output_tokens for r in results if isinstance(r, LLMResponse))
 
     m = server.server_metrics
     return RunResult(
@@ -324,6 +488,8 @@ async def run_gateway(
         failures=failures,
         latencies_s=latencies,
         cost_usd=cost,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -358,6 +524,9 @@ def run_scalars(r: RunResult, n_prompts: int) -> dict[str, float]:
         "p95_s": _percentile(r.latencies_s, 95),
         "p99_s": _percentile(r.latencies_s, 99),
         "cost_usd": r.cost_usd,
+        "input_tokens": float(r.input_tokens),
+        "output_tokens": float(r.output_tokens),
+        "total_tokens": float(r.input_tokens + r.output_tokens),
     }
 
 
@@ -373,6 +542,7 @@ METRIC_ORDER: list[tuple[str, str, str]] = [
     ("p95_s", "latency p95 (s)", "{:.3f}"),
     ("p99_s", "latency p99 (s)", "{:.3f}"),
     ("cost_usd", "est. cost (USD)", "{:.4f}"),
+    ("total_tokens", "total tokens (in+out)", "{:.0f}"),
 ]
 
 
@@ -395,8 +565,51 @@ def summarize(runs: list[RunResult], n_prompts: int) -> dict[str, dict[str, floa
 # ---------------------------------------------------------------------------
 
 
+def arm_order_for_run(run_index: int, arm_order: str) -> tuple[str, str]:
+    """Which arm goes first in this run (0-indexed).
+
+    Exists because, against a real provider, the two arms share one
+    account's rate-limit state: whichever arm runs first gets a clean
+    bucket, and whichever runs second inherits however much of that
+    bucket the first arm just spent. Running every run in the same order
+    bakes that bias into every number the same way; "alternate" makes any
+    residual bias visible in the per-run spread instead (see
+    --arm-cooldown for the other half of the fix -- actually letting the
+    bucket refill between arms).
+    """
+    if arm_order == "naive-first":
+        return ("naive", "gateway")
+    if arm_order == "gateway-first":
+        return ("gateway", "naive")
+    # "alternate": run 0 naive-first, run 1 gateway-first, run 2 naive-first, ...
+    return ("naive", "gateway") if run_index % 2 == 0 else ("gateway", "naive")
+
+
+async def _cooldown(seconds: float, *, from_label: str, to_label: str) -> None:
+    if seconds <= 0:
+        return
+    print(
+        f"  cooling down {seconds:.0f}s between {from_label} and {to_label} arms "
+        "(letting the account's rate-limit bucket refill -- not hung)...",
+        flush=True,
+    )
+    await asyncio.sleep(seconds)
+
+
 async def run_all(args: argparse.Namespace) -> dict[str, Any]:
-    prompts = make_prompts(args.n_prompts, args.seed, args.max_tokens)
+    if getattr(args, "provider", "sim") == "groq":
+        return await run_all_live(args)
+    return await run_all_sim(args)
+
+
+async def run_all_sim(args: argparse.Namespace) -> dict[str, Any]:
+    prompts = make_prompts(
+        args.n_prompts,
+        args.seed,
+        args.max_tokens,
+        words_min=getattr(args, "prompt_words_min", 5),
+        words_max=getattr(args, "prompt_words_max", 40),
+    )
     master = random.Random(args.seed)
     # One seed per run, drawn once from the master RNG -- reused for BOTH
     # arms so run i in the naive arm and run i in the gateway arm face
@@ -407,25 +620,28 @@ async def run_all(args: argparse.Namespace) -> dict[str, Any]:
 
     naive_runs: list[RunResult] = []
     gateway_runs: list[RunResult] = []
+    cooldown_s = getattr(args, "arm_cooldown", 0.0) or 0.0
+    arm_order = getattr(args, "arm_order", "alternate")
 
-    for rs in run_seeds:
-        naive_server = SimClient(
-            "sim-naive",
-            rpm_limit=int(args.server_rpm),
-            latency_rng=random.Random(rs),
-            latency_mean_s=args.server_latency_mean_ms / 1000.0,
-            latency_sigma=args.server_latency_sigma,
-            fail_rng=random.Random(rs + 1),
-            transient_fail_rate=args.server_fail_rate,
-        )
-        naive_retry = RetryPolicy(
-            max_attempts=args.max_attempts,
-            base_delay=args.base_delay,
-            max_delay=args.max_delay,
-            rng=random.Random(rs + 2),
-        )
-        naive_runs.append(
-            await run_naive(
+    for run_index, rs in enumerate(run_seeds):
+
+        async def do_naive(rs: int = rs) -> RunResult:
+            naive_server = SimClient(
+                "sim-naive",
+                rpm_limit=int(args.server_rpm),
+                latency_rng=random.Random(rs),
+                latency_mean_s=args.server_latency_mean_ms / 1000.0,
+                latency_sigma=args.server_latency_sigma,
+                fail_rng=random.Random(rs + 1),
+                transient_fail_rate=args.server_fail_rate,
+            )
+            naive_retry = RetryPolicy(
+                max_attempts=args.max_attempts,
+                base_delay=args.base_delay,
+                max_delay=args.max_delay,
+                rng=random.Random(rs + 2),
+            )
+            return await run_naive(
                 prompts,
                 naive_server,
                 concurrency=args.concurrency,
@@ -433,25 +649,24 @@ async def run_all(args: argparse.Namespace) -> dict[str, Any]:
                 cost_per_1k_input=args.cost_per_1k_input,
                 cost_per_1k_output=args.cost_per_1k_output,
             )
-        )
 
-        gateway_server = SimClient(
-            "sim-gateway",
-            rpm_limit=int(args.server_rpm),
-            latency_rng=random.Random(rs),
-            latency_mean_s=args.server_latency_mean_ms / 1000.0,
-            latency_sigma=args.server_latency_sigma,
-            fail_rng=random.Random(rs + 1),
-            transient_fail_rate=args.server_fail_rate,
-        )
-        gateway_retry = RetryPolicy(
-            max_attempts=args.max_attempts,
-            base_delay=args.base_delay,
-            max_delay=args.max_delay,
-            rng=random.Random(rs + 2),
-        )
-        gateway_runs.append(
-            await run_gateway(
+        async def do_gateway(rs: int = rs) -> RunResult:
+            gateway_server = SimClient(
+                "sim-gateway",
+                rpm_limit=int(args.server_rpm),
+                latency_rng=random.Random(rs),
+                latency_mean_s=args.server_latency_mean_ms / 1000.0,
+                latency_sigma=args.server_latency_sigma,
+                fail_rng=random.Random(rs + 1),
+                transient_fail_rate=args.server_fail_rate,
+            )
+            gateway_retry = RetryPolicy(
+                max_attempts=args.max_attempts,
+                base_delay=args.base_delay,
+                max_delay=args.max_delay,
+                rng=random.Random(rs + 2),
+            )
+            return await run_gateway(
                 prompts,
                 gateway_server,
                 rpm_limit=args.server_rpm,
@@ -464,12 +679,147 @@ async def run_all(args: argparse.Namespace) -> dict[str, Any]:
                 cost_per_1k_input=args.cost_per_1k_input,
                 cost_per_1k_output=args.cost_per_1k_output,
             )
-        )
+
+        first, second = arm_order_for_run(run_index, arm_order)
+        runners = {"naive": (do_naive, naive_runs), "gateway": (do_gateway, gateway_runs)}
+        first_fn, first_list = runners[first]
+        second_fn, second_list = runners[second]
+        first_list.append(await first_fn())
+        await _cooldown(cooldown_s, from_label=first, to_label=second)
+        second_list.append(await second_fn())
 
     return {
         "n_prompts": len(prompts),
         "naive": naive_runs,
         "gateway": gateway_runs,
+    }
+
+
+async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
+    """Same two arms, same metric collection as run_all_sim -- against the
+    real Groq API instead of SimClient. See the module docstring and
+    benchmarks/README.md's "Live results" section for what this can and
+    cannot show at the scale this is run at.
+    """
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise SystemExit(
+            "GROQ_API_KEY is not set. Export it from the key file first, e.g.:\n"
+            "  GROQ_API_KEY=$(cat ~/.groq_key) python3 benchmarks/bench.py --provider groq ..."
+        )
+
+    planned_calls = args.n_prompts * args.runs * 2  # 2 arms, before any retries
+    max_live_calls = args.max_live_calls
+    if planned_calls > max_live_calls:
+        raise SystemExit(
+            f"refusing to run live: --n-prompts {args.n_prompts} * --runs {args.runs} * "
+            f"2 arms = {planned_calls} planned calls, above --max-live-calls "
+            f"{max_live_calls}. Lower --n-prompts/--runs or raise --max-live-calls "
+            "deliberately -- this ceiling exists so a typo can't fire tens of "
+            "thousands of requests at a real provider."
+        )
+
+    prompts = make_prompts(
+        args.n_prompts,
+        args.seed,
+        args.max_tokens,
+        words_min=getattr(args, "prompt_words_min", 5),
+        words_max=getattr(args, "prompt_words_max", 40),
+    )
+    budget = LiveCallBudget(max_live_calls)
+
+    naive_runs: list[RunResult] = []
+    gateway_runs: list[RunResult] = []
+    live_clients: list[Any] = []
+    cooldown_s = getattr(args, "arm_cooldown", 90.0) or 0.0
+    arm_order = getattr(args, "arm_order", "alternate")
+
+    if cooldown_s > 0:
+        print(
+            f"waiting out a {cooldown_s:.0f}s cooldown before the first arm, so the "
+            "account starts this invocation with a full token bucket (not hung)...",
+            flush=True,
+        )
+        await asyncio.sleep(cooldown_s)
+
+    try:
+        for run_index in range(args.runs):
+
+            async def do_naive() -> RunResult:
+                # Naive arm: bare GroqClient, wrapped only for call counting
+                # -- no rate limiting, same concurrency/retry discipline as
+                # the simulated naive arm.
+                naive_client = LiveCallCounter(
+                    build_live_groq_client(args.model, api_key), budget
+                )
+                live_clients.append(naive_client)
+                naive_retry = RetryPolicy(
+                    max_attempts=args.max_attempts,
+                    base_delay=args.base_delay,
+                    max_delay=args.max_delay,
+                )
+                return await run_naive(
+                    prompts,
+                    naive_client,
+                    concurrency=args.concurrency,
+                    retry=naive_retry,
+                    cost_per_1k_input=0.0,
+                    cost_per_1k_output=0.0,
+                )
+
+            async def do_gateway() -> RunResult:
+                # Gateway arm: real Provider wrapping the same kind of
+                # counted client, paced by a token bucket set at/slightly
+                # under Groq's real free-tier limits (--live-rpm-limit /
+                # --live-tpm-limit).
+                gateway_client = LiveCallCounter(
+                    build_live_groq_client(args.model, api_key), budget
+                )
+                live_clients.append(gateway_client)
+                gateway_provider = build_live_groq_provider(
+                    args.model,
+                    api_key,
+                    gateway_client,
+                    rpm_limit=args.live_rpm_limit,
+                    tpm_limit=args.live_tpm_limit,
+                    max_concurrency=args.concurrency,
+                )
+                gateway_retry = RetryPolicy(
+                    max_attempts=args.max_attempts,
+                    base_delay=args.base_delay,
+                    max_delay=args.max_delay,
+                )
+                return await run_gateway(
+                    prompts,
+                    gateway_client,
+                    rpm_limit=args.live_rpm_limit,
+                    tpm_limit=args.live_tpm_limit,
+                    batch_size=args.batch_size,
+                    batch_wait_ms=args.batch_wait_ms,
+                    batch_tokens=args.batch_tokens,
+                    retry=gateway_retry,
+                    cost_per_1k_input=0.0,
+                    cost_per_1k_output=0.0,
+                    provider=gateway_provider,
+                )
+
+            first, second = arm_order_for_run(run_index, arm_order)
+            runners = {"naive": (do_naive, naive_runs), "gateway": (do_gateway, gateway_runs)}
+            first_fn, first_list = runners[first]
+            second_fn, second_list = runners[second]
+            print(f"run {run_index + 1}/{args.runs}: {first} arm first this time", flush=True)
+            first_list.append(await first_fn())
+            await _cooldown(cooldown_s, from_label=first, to_label=second)
+            second_list.append(await second_fn())
+    finally:
+        for c in live_clients:
+            await c.aclose()
+
+    return {
+        "n_prompts": len(prompts),
+        "naive": naive_runs,
+        "gateway": gateway_runs,
+        "live_calls_used": budget.used,
     }
 
 
@@ -490,6 +840,36 @@ reverse-engineered from the outcome):
     sent to the server, at the cost of a bit more added queueing latency.
 If the numbers below don't show that pattern, that's a real result, not a
 bug in this harness -- it will be reported as such, not tuned away.
+"""
+
+LIVE_EXPECTATION = """\
+LIVE MODE -- read this before the numbers below.
+
+This is a small, real-network sanity check, not a bigger version of the
+simulated benchmark. For this account/model, measured response headers put
+the binding constraint on TOKENS PER MINUTE (x-ratelimit-limit-tokens=6000,
+fast-refilling), not requests (x-ratelimit-limit-requests=7000 over a
+~7-minute window, i.e. generous). --live-tpm-limit (default 5500, just under
+6000) is what should actually pace the gateway arm; --live-rpm-limit
+(default 900) is intentionally generous because requests are not the
+constraint under test here. Two opposite failure modes are both real
+possibilities and neither is a bug in this harness:
+  - The workload may not generate enough tokens/min to approach 6000 (e.g.
+    too few prompts, or prompts too short). If status_429 is 0 for BOTH
+    arms below, that is not "the gateway ties naive" -- it is "this run
+    never got close enough to the token ceiling to exercise the thing
+    under test," and the simulated benchmark above remains the only
+    evidence for the rate-limiting claim.
+  - --live-tpm-limit may still be misconfigured relative to the account's
+    actual current limit (limits can change, or differ by model). A first
+    attempt at this benchmark set the gateway ceiling from a misread
+    header and left the token bucket effectively unpaced -- see
+    benchmarks/README.md's "Live results" for what actually happened and
+    how it was corrected. If BOTH arms show heavy 429s and low success,
+    check whether --live-tpm-limit was really under the account's real
+    limit before concluding anything about the library.
+Read the actual --live-rpm-limit/--live-tpm-limit used (in the parameters
+block above) against the 429 counts below before drawing any conclusion.
 """
 
 
@@ -630,19 +1010,121 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--base-delay", type=float, default=0.5)
     p.add_argument("--max-delay", type=float, default=8.0)
     p.add_argument("--max-tokens", type=int, default=256, help="LLMRequest.max_tokens for every prompt")
+    p.add_argument(
+        "--prompt-words-min",
+        type=int,
+        default=5,
+        help="min words in the random filler each generated prompt carries "
+        "(prompt is 'Summarize item #i: ' + this many-to-'--prompt-words-max' "
+        "repetitions of 'word '). Default reproduces the original simulated "
+        "benchmark's short prompts; raise both bounds for a live run where "
+        "token throughput (not request count) needs to bind.",
+    )
+    p.add_argument(
+        "--prompt-words-max",
+        type=int,
+        default=40,
+        help="max words in the random filler each generated prompt carries; see --prompt-words-min",
+    )
     p.add_argument("--cost-per-1k-input", type=float, default=0.02)
     p.add_argument("--cost-per-1k-output", type=float, default=0.04)
     p.add_argument("--json", dest="json_path", default=None, help="dump raw per-run numbers to this file")
     p.add_argument("--markdown", action="store_true", help="also print a markdown table")
+    p.add_argument(
+        "--arm-cooldown",
+        type=float,
+        default=None,
+        help="seconds to sleep BETWEEN the two arms (after the first arm of "
+        "a run finishes, before the second starts), so a shared account's "
+        "rate-limit bucket can refill before the second arm inherits "
+        "whatever the first one used. Default: 0 for --provider sim (the "
+        "simulated server gives each arm its own independent SimClient, so "
+        "there's no shared state to let refill), 90 for --provider groq "
+        "(both arms share one real account/token bucket back-to-back "
+        "otherwise -- see benchmarks/README.md's 'Live results' for what "
+        "happens without this). Pass explicitly to override either default.",
+    )
+    p.add_argument(
+        "--arm-order",
+        choices=["alternate", "naive-first", "gateway-first"],
+        default="alternate",
+        help="which arm goes first within each run. 'alternate' (default): "
+        "run 1 naive-first, run 2 gateway-first, run 3 naive-first, ... so "
+        "any residual ordering bias (e.g. an imperfect --arm-cooldown) shows "
+        "up as spread across runs instead of being baked into every run the "
+        "same way. 'naive-first'/'gateway-first' pin the order for all runs.",
+    )
+
+    live = p.add_argument_group(
+        "live mode", "run against the real Groq API instead of the simulated server"
+    )
+    live.add_argument(
+        "--provider",
+        choices=["sim", "groq"],
+        default="sim",
+        help="'sim' (default): the simulated server above. 'groq': the real "
+        "Groq API -- reads GROQ_API_KEY from the environment, never from a "
+        "flag, so the key is never captured in argv, the printed header, or "
+        "the --json dump.",
+    )
+    live.add_argument(
+        "--model",
+        default="allam-2-7b",
+        help="model id passed to Groq (live mode only). Default is a small, "
+        "verified-working model -- do not rely on the library's own default, "
+        "which may not match a given account's access.",
+    )
+    live.add_argument(
+        "--max-live-calls",
+        type=int,
+        default=400,
+        help="hard ceiling on real HTTP calls for the whole invocation (both "
+        "arms, all runs, retries included). The run refuses to start if "
+        "n_prompts * runs * 2 already exceeds this, and stops mid-run if "
+        "retries would push it over. Exists so a typo can't fire tens of "
+        "thousands of requests at a real provider.",
+    )
+    live.add_argument(
+        "--live-rpm-limit",
+        type=float,
+        default=900.0,
+        help="gateway arm's request-bucket ceiling, live mode only. Measured "
+        "real response headers for this account/model showed "
+        "x-ratelimit-limit-requests=7000 with a ~7-minute reset window (roughly "
+        "1000 req/min) -- generous, and NOT the binding constraint (see "
+        "--live-tpm-limit). This default (900) is set comfortably under that "
+        "measured request ceiling so requests are never why the gateway arm "
+        "paces itself; tokens-per-minute is. An earlier version of this flag "
+        "defaulted to 25, extrapolated from a single misread header on the "
+        "first live attempt -- see benchmarks/README.md, 'Live results', for "
+        "that mistake and the header values that corrected it. The naive arm "
+        "has no rate limiting at all, live or simulated: that asymmetry is "
+        "the variable under test.",
+    )
+    live.add_argument(
+        "--live-tpm-limit",
+        type=float,
+        default=5_500.0,
+        help="gateway arm's token-per-minute bucket, live mode only. Measured "
+        "real response headers for this account/model showed "
+        "x-ratelimit-limit-tokens=6000 with a fast-refilling window -- this "
+        "is the actual binding constraint for this account (also matches "
+        "groq_provider()'s own default tpm_limit=6000 in "
+        "src/llm_gateway/providers/groq.py). This default (5500) is set just "
+        "under that measured ceiling.",
+    )
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    live = args.provider == "groq"
+    if args.arm_cooldown is None:
+        args.arm_cooldown = 90.0 if live else 0.0
 
     print(build_header(args))
     print()
-    print(EXPECTATION)
+    print(LIVE_EXPECTATION if live else EXPECTATION)
 
     result = asyncio.run(run_all(args))
     naive_summary = summarize(result["naive"], result["n_prompts"])
@@ -653,6 +1135,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.markdown:
         print()
         print(render_markdown(naive_summary, gateway_summary, result["n_prompts"], args.runs))
+
+    if live:
+        print(f"\nlive HTTP calls made this invocation: {result['live_calls_used']} "
+              f"(ceiling was --max-live-calls {args.max_live_calls})")
 
     if args.json_path:
         dump_json(args.json_path, args, result, naive_summary, gateway_summary)

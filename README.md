@@ -118,9 +118,40 @@ limit, do not add it.
 ## Status
 
 The core is complete, tested and typed, and adapters for Groq and OpenRouter
-are implemented and unit-tested against a fake HTTP server. **Nothing has yet
-run against a live provider API** — that, and a benchmark against real
-endpoints, are the next milestones. See [ROADMAP.md](ROADMAP.md).
+are implemented and unit-tested against a fake HTTP server. The Groq adapter
+has now run against the real Groq API three times (`benchmarks/bench.py
+--provider groq`; see
+[benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
+all three runs in full) — real HTTP calls, real 429/`Retry-After` handling,
+real token usage, no simulation involved, every time. The first two attempts
+were methodology failures, kept on record rather than deleted: attempt 1 had
+the gateway arm's rate-limit ceiling set from a misread header (~200x too
+permissive on the dimension that actually binds), so both arms got hit hard
+by real 429s and the comparison tested nothing; attempt 2 fixed the ceiling
+but ran both arms back-to-back with no cooldown, so the naive arm's burst
+drained the shared account's token bucket and the gateway arm absorbed
+leftover 429s that weren't its own doing. Neither attempt found a defect in
+the library itself — every 429 was correctly detected and retried both
+times.
+
+A third, corrected attempt (a 90s cooldown between arms, arm order
+alternated across runs, 2 runs of 40 prompts each, 185 live calls, $0 on
+the free tier) fixed both problems and produced a real result: the gateway
+completed **100% of prompts in both runs (0 failures)**, while the naive
+loop lost as many as 17 of 40 prompts in one run (57.5% success). That
+reliability came at a real, disclosed cost — the gateway was far slower
+live (67s vs 7.4s median wall-clock, 30s vs 0.7s p50 latency), because it
+paces itself under the account's real ~5500 tokens/min ceiling instead of
+bursting and eating rejections the way the naive loop does; this live run
+does **not** reproduce the simulated benchmark's wall-clock advantage. The
+two runs also varied enough (naive: 23-67 requests, 0-34 rejections) that
+these numbers should be read as indicative of the effect, not a precise
+measurement of it, at N=2 on one shared account. Read
+[benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
+the full breakdown, both earlier attempts in full, and every caveat before
+citing any of these numbers. Broader real-endpoint coverage (more
+providers, more models, tighter live variance) is the next milestone. See
+[ROADMAP.md](ROADMAP.md).
 
 ## The problem
 

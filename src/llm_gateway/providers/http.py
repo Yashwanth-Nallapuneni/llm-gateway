@@ -232,10 +232,12 @@ class OpenAICompatibleClient:
         choices = body.get("choices") or []
         text = ""
         logprobs: list[float] | None = None
+        finish_reason: str | None = None
         if choices:
             choice = choices[0]
             message = choice.get("message") or {}
             text = message.get("content") or ""
+            finish_reason = choice.get("finish_reason")
             lp = choice.get("logprobs")
             if lp and isinstance(lp, dict):
                 content = lp.get("content")
@@ -256,6 +258,7 @@ class OpenAICompatibleClient:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             logprobs=logprobs,
+            finish_reason=finish_reason,
         )
 
     async def complete(self, request: LLMRequest) -> LLMResponse:

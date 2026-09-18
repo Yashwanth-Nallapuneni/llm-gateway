@@ -51,6 +51,24 @@ class LLMResponse:
     logprobs: list[float] | None = None
     attempts: int = 1
     latency_s: float = 0.0
+    # The upstream's stop reason ("stop", "length", "content_filter", ...).
+    # None when the provider didn't send one. Not normalized across
+    # providers -- callers who care about a specific value should check it
+    # against the exact string their provider documents.
+    finish_reason: str | None = None
+
+    @property
+    def was_truncated(self) -> bool:
+        """True when the response was cut off for running out of tokens.
+
+        This is the signal a caller needs to catch the reasoning-model trap:
+        a small `max_tokens` budget consumed entirely by hidden reasoning
+        tokens, leaving `text == ""` with no indication anything went wrong
+        unless `finish_reason` is checked. `was_truncated` is true for *any*
+        length-truncated response, not just empty ones -- a non-empty answer
+        cut short by the token budget is exactly as truncated.
+        """
+        return self.finish_reason == "length"
 
 
 @dataclass(slots=True)

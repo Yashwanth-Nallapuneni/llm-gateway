@@ -38,6 +38,7 @@ class MockClient:
         rpm_limit: int | None = None,
         supports_logprobs: bool = False,
         clock: Callable[[], float] | None = None,
+        finish_reason: str | None = "stop",
     ) -> None:
         self.name = name
         self.latency = latency
@@ -49,6 +50,10 @@ class MockClient:
         self.rpm_limit = rpm_limit
         self.supports_logprobs = supports_logprobs
         self._clock = clock or time.monotonic
+        # Lets a test simulate a truncated (or otherwise non-"stop") response
+        # -- e.g. finish_reason="length" with empty text, reproducing the
+        # reasoning-model-starved-of-budget trap offline.
+        self.finish_reason = finish_reason
 
         self.calls = 0
         self.in_flight = 0
@@ -131,6 +136,7 @@ class MockClient:
             input_tokens=request.estimated_input_tokens(),
             output_tokens=min(request.max_tokens, 32),
             logprobs=[-0.1, -0.2] if self.supports_logprobs else None,
+            finish_reason=self.finish_reason,
         )
 
     async def complete_batch(self, requests: list[LLMRequest]) -> list[LLMResponse]:
@@ -176,6 +182,7 @@ class MockClient:
                 input_tokens=r.estimated_input_tokens(),
                 output_tokens=min(r.max_tokens, 32),
                 logprobs=[-0.1, -0.2] if self.supports_logprobs else None,
+                finish_reason=self.finish_reason,
             )
             for r in requests
         ]

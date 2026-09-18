@@ -1,0 +1,93 @@
+# Live provider tests — runs the test suite against the REAL Groq API.
+#
+# This workflow is manual-only. It does not run on every push or PR because
+# it costs real API quota and depends on a third-party service being up; a
+# failure here means "Groq changed something" or "quota exhausted", not "this
+# PR is broken", so it must never block normal development.
+#
+# One-time setup (do this before the first run):
+#
+#   1. Add the API key as a repository secret:
+#      Settings -> Secrets and variables -> Actions -> New repository secret
+#      Name:  GROQ_API_KEY
+#      Value: <your Groq API key>
+#
+#   2. Create the "live-tests" GitHub Environment (used to gate the secret):
+#      Settings -> Environments -> New environment -> name it "live-tests"
+#      Optionally add yourself as a required reviewer under
+#      "Deployment protection rules" so every run needs a manual approval
+#      before the secret is exposed.
+#
+#   3. Add GROQ_API_KEY to the "live-tests" environment's secrets (Environment
+#      secrets take precedence over/are separate from repository secrets, and
+#      scoping it to the environment is what lets the reviewer gate apply).
+#
+#   4. To trigger a run: go to the "Actions" tab -> "Live provider tests"
+#      (this workflow) in the left sidebar -> "Run workflow" button -> pick
+#      the branch -> "Run workflow".
+#
+# Schedule decision: in addition to workflow_dispatch, this workflow also
+# runs weekly (Mondays 06:00 UTC) as a low-traffic canary for upstream API
+# drift (Groq changing response shapes, deprecating models, etc.). A single
+# weekly run against a free-tier key is cheap enough not to be a quota
+# concern, and catching drift within a week beats discovering it only when a
+# human happens to run this by hand. If that trade-off stops making sense
+# (quota pressure, noisy failures), delete the `schedule:` block below and
+# keep workflow_dispatch only.
+#
+# Missing-secret behaviour: if GROQ_API_KEY has not been configured yet, the
+# live tests skip themselves (they check for the env var and self-skip) and
+# this job is expected to finish green with all live tests reported as
+# skipped. We deliberately do NOT fail the job in that case: a red workflow
+# that solo maintainers cannot fix without also fixing GitHub secrets (which
+# requires repo admin access, done outside of any PR) is just persistent
+# noise. A green run with "skipped" in the log is easy to notice and
+# understand; a permanently red one gets ignored.
+#
+# Security note: `pull_request_target` is intentionally never used here. That
+# trigger runs workflow code from the base branch but checks out and can be
+# steered by a fork's PR content, which would let an attacker exfiltrate
+# GROQ_API_KEY through a malicious PR. This workflow only ever runs on
+# workflow_dispatch (and the fixed weekly schedule above), both of which use
+# the trusted default branch and require repo-write access to trigger.
+
+name: Live provider tests
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Mondays at 06:00 UTC — see "Schedule decision" comment above.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: live (groq)
+    runs-on: ubuntu-latest
+    environment: live-tests
+    # Guards against a hung network call burning Actions minutes; the whole
+    # live suite should finish in well under this on a healthy API.
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      # GROQ_API_KEY is scoped to this step only (not the job or workflow),
+      # and is never echoed, dumped via `env`, or exposed via `set -x`. If the
+      # secret is unset, the live tests are expected to self-skip and this
+      # step still exits 0.
+      - name: Run live tests against the real Groq API
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: pytest -m live -q
