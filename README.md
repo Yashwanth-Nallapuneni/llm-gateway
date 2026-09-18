@@ -1,10 +1,59 @@
 # llm-gateway
 
-A rate-limited, batching, failover-capable client layer for LLM APIs.
-Python 3.11+, asyncio, zero runtime dependencies.
+**Send 500 prompts to an LLM API without writing a single `sleep()`.**
 
-It sits between your code and a provider SDK. It is not a proxy, not a server,
-and it does no caching or prompt management.
+An async Python layer that sits between your code and a provider's API. It
+paces requests under rate limits, retries what is worth retrying, groups
+prompts to cut round trips, and moves traffic off a provider that starts
+failing.
+
+[![CI](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/Yashwanth-Nallapuneni/llm-gateway/branch/main/graph/badge.svg)](https://codecov.io/gh/Yashwanth-Nallapuneni/llm-gateway)
+[![PyPI](https://img.shields.io/pypi/v/aiollm-gateway.svg)](https://pypi.org/project/aiollm-gateway/)
+[![Python](https://img.shields.io/pypi/pyversions/aiollm-gateway.svg)](https://pypi.org/project/aiollm-gateway/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Python 3.11+, asyncio, **zero runtime dependencies**. Not a proxy, not a
+server, no caching or prompt management.
+
+```bash
+pip install aiollm-gateway
+```
+
+## Quickstart
+
+This runs as-is — no API key, no network. `MockProvider` ships with the library
+precisely so you can see the machinery work before wiring up a real provider.
+
+```python
+import asyncio
+from llm_gateway import Batcher, LLMGateway, LLMRequest, MockProvider
+
+async def main():
+    gateway = LLMGateway(
+        providers=[MockProvider("cheap", rpm_limit=600, cost_per_1k_output=0.02),
+                   MockProvider("backup", rpm_limit=1200, cost_per_1k_output=0.50)],
+        batcher=Batcher(max_batch_size=16, max_wait_ms=50),
+    )
+    async with gateway:
+        responses = await gateway.submit_many(
+            [LLMRequest(prompt=f"Summarise document {i}") for i in range(500)]
+        )
+    print(f"{len(responses)} responses")
+    print(gateway.metrics.report())
+
+asyncio.run(main())
+```
+
+500 requests go out as roughly 50 batched dispatches, paced under both the
+request and token limits, with failures retried and routed around.
+
+## Status
+
+Honest current state: the core is complete, tested and typed, but every
+number below comes from the built-in mock provider. Adapters for real
+providers (Groq, OpenRouter) and a measured benchmark against them are the
+next milestones — see [ROADMAP.md](ROADMAP.md).
 
 ## The problem
 
@@ -95,8 +144,8 @@ Data flows down; results and failures propagate back up through the
 ## Running it
 
 ```bash
-pip install aiollm-gateway          # published package name
-# or, to work on it:
+git clone https://github.com/Yashwanth-Nallapuneni/llm-gateway
+cd llm-gateway
 pip install -e ".[dev]"
 pytest
 python examples/bulk_eval.py

@@ -1,0 +1,112 @@
+# Publishes aiollm-gateway to PyPI using PyPI Trusted Publishing (OIDC) — no
+# API token is stored in this repo.
+#
+# One-time setup, before the first tagged release (do this on pypi.org, not here):
+#
+#   1. Log in to https://pypi.org and go to your account's "Publishing" page
+#      (or, for a brand-new project name, https://pypi.org/manage/account/publishing/).
+#   2. Add a "pending publisher" with exactly:
+#        PyPI project name:   aiollm-gateway
+#        Owner:               Yashwanth-Nallapuneni
+#        Repository name:     llm-gateway
+#        Workflow filename:   release.yml
+#        Environment name:    pypi
+#   3. Repeat on https://test.pypi.org (its own separate account/project) with
+#      environment name "testpypi" if you want to rehearse via workflow_dispatch
+#      below before publishing for real.
+#   4. In this repo's GitHub Settings -> Environments, create environments named
+#      "pypi" and "testpypi" (plain, no required reviewers needed, though you may
+#      add them for extra safety). The environment name here must match what you
+#      typed into PyPI's pending-publisher form exactly.
+#
+# IMPORTANT: registering a pending publisher does NOT reserve the project name
+# on PyPI. Someone else can still register "aiollm-gateway" first, and until this
+# workflow's first successful publish, the pending publisher is only a promise
+# to trust this repo/workflow once that name exists (or once you own it). If the
+# name is available, your first successful run here is what actually claims it.
+#
+# After the pending publisher is configured, push a tag like `v0.1.0` to publish
+# to PyPI, or run this workflow manually (workflow_dispatch) to publish a
+# rehearsal build to TestPyPI instead.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build tooling
+        run: pip install build twine
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Validate package metadata renders on PyPI
+        run: twine check dist/*
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    name: publish to TestPyPI
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/aiollm-gateway
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: publish to PyPI
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/aiollm-gateway
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

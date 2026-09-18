@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        experimental: [false]
+        # Python 3.14.0 was released 2025-10-07 and has been the current stable
+        # release for nearly a year by the time this workflow runs; setup-python
+        # ships cached 3.14 builds for ubuntu-latest and every dev dependency here
+        # (pytest/pytest-asyncio/pytest-cov, ruff, mypy, httpx) already publishes
+        # cp314 wheels, so 3.14 runs as a normal (non-experimental) matrix entry
+        # rather than continue-on-error.
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run tests with coverage
+        run: pytest tests/ -q --cov=llm_gateway --cov-report=xml --cov-report=term
+
+      # Coverage is only uploaded once, from the 3.12 leg, to avoid Codecov
+      # receiving duplicate reports from every matrix entry.
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          # Public repos don't strictly need a token, but passing it (when the
+          # secret exists) avoids rate-limiting on tokenless uploads. Left
+          # unset, this resolves to an empty string and is a no-op.
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check .
+
+      # `ruff format --check .` is not run here: as of this workflow's authoring,
+      # it would reformat 10 files (mostly wrapping long lines in the heavily
+      # commented teaching modules under src/llm_gateway and their tests), which
+      # would churn those files for no functional benefit. Re-enable this line
+      # once the repo has been run through `ruff format` deliberately:
+      # - name: Ruff format check
+      #   run: ruff format --check .
+
+      - name: Mypy
+        run: mypy
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build tooling
+        run: pip install build twine
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Validate package metadata renders on PyPI
+        run: twine check dist/*
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
