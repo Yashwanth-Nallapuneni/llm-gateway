@@ -95,6 +95,8 @@ Data flows down; results and failures propagate back up through the
 ## Running it
 
 ```bash
+pip install aiollm-gateway          # published package name
+# or, to work on it:
 pip install -e ".[dev]"
 pytest
 python examples/bulk_eval.py

@@ -6,7 +6,7 @@ Read `batching.EXPLAIN.md` before this file.
 from __future__ import annotations
 
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from .queue import RequestQueue
 from .types import LLMRequest, QueuedRequest

@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import time
+from collections.abc import Callable
+from types import TracebackType
 
 from .batching import Batcher
 from .metrics import MetricsSink
@@ -33,6 +35,8 @@ class LLMGateway:
         retry: RetryPolicy | None = None,
         router: ProviderRouter | None = None,
         metrics: MetricsSink | None = None,
+        *,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         if not providers:
             raise ValueError("at least one provider is required")
@@ -41,11 +45,28 @@ class LLMGateway:
         self.retry = retry or RetryPolicy()
         self.router = router or ProviderRouter()
         self.metrics = metrics or MetricsSink()
+        # Drives enqueued_at, blocked-time and end-to-end latency below, the
+        # same way TokenBucket/ProviderLimiter/CircuitBreaker/Provider take an
+        # injectable clock so tests can control time deterministically.
+        #
+        # Constraint: the batcher (batching.py) intentionally keeps using
+        # real time.monotonic() for its own wait-deadline math, since its
+        # correctness depends on interacting with real asyncio timeouts (see
+        # batching.py). Batcher.collect() reads QueuedRequest.enqueued_at
+        # (set from self._clock() in submit(), below) and compares it against
+        # real time.monotonic() to decide whether a batch's max_wait has
+        # elapsed. If a fake clock here is far from real monotonic time, that
+        # comparison is meaningless. A test that injects a fake clock should
+        # either keep it offset-compatible with real time.monotonic() (e.g.
+        # a fixed value near "now", or an offset from it) or configure the
+        # batcher with a max_wait_ms large enough that timing out on the
+        # bogus elapsed time never happens.
+        self._clock = clock or time.monotonic
 
         self.queue = RequestQueue()
         self._in_flight = 0
-        self._dispatcher: asyncio.Task | None = None
-        self._workers: set[asyncio.Task] = set()
+        self._dispatcher: asyncio.Task[None] | None = None
+        self._workers: set[asyncio.Task[None]] = set()
         # Set if the dispatcher loop itself dies. Without this, a crash in the
         # dispatcher leaves every caller awaiting a future nobody will ever
         # resolve -- the program hangs instead of reporting the error.
@@ -75,32 +96,53 @@ class LLMGateway:
         self._dispatcher = None
         self._workers.clear()
 
-    async def __aenter__(self) -> "LLMGateway":
+    async def __aenter__(self) -> LLMGateway:
         self._ensure_started()
         return self
 
-    async def __aexit__(self, *exc) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         await self.aclose()
 
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
 
+    def _read_fatal(self) -> BaseException | None:
+        # Indirection, not a shortcut for `self._fatal`: mypy narrows a plain
+        # attribute read to `None` once it has seen a guard like `if
+        # self._fatal is not None: raise ...` earlier in the function, and
+        # keeps treating it as `None` for the rest of the function body. That
+        # is correct for code that never mutates the attribute again -- but
+        # `_fatal` is shared state the dispatcher task can set concurrently,
+        # out from under `submit()`, between the guard below and the re-check
+        # further down. Routing every read through a method call (whose
+        # result mypy cannot narrow the way it narrows a bare attribute)
+        # keeps both checks live instead of one being "optimized" away by the
+        # type checker as unreachable.
+        return self._fatal
+
     async def submit(self, request: LLMRequest) -> LLMResponse:
-        if self._fatal is not None:
-            raise self._fatal
+        fatal_on_entry = self._read_fatal()
+        if fatal_on_entry is not None:
+            raise fatal_on_entry
         self._ensure_started()
         loop = asyncio.get_running_loop()
         entry = QueuedRequest(
-            request=request, future=loop.create_future(), enqueued_at=time.monotonic()
+            request=request, future=loop.create_future(), enqueued_at=self._clock()
         )
         self.metrics.submitted += 1
         self.queue.put(entry)
         # Re-check: the dispatcher can have crashed and drained the queue
         # between the check above and this put, which would leave this entry
         # sitting in a queue nobody is reading.
-        if self._fatal is not None and not entry.future.done():
-            entry.future.set_exception(self._fatal)
+        fatal = self._read_fatal()
+        if fatal is not None and not entry.future.done():
+            entry.future.set_exception(fatal)
         return await entry.future
 
     async def submit_many(self, requests: list[LLMRequest]) -> list[LLMResponse]:
@@ -116,7 +158,7 @@ class LLMGateway:
             await self._loop()
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:  # noqa: BLE001 - last line of defence
+        except BaseException as exc:
             self._fatal = exc
             self._drain_with_error(exc)
             raise
@@ -179,7 +221,7 @@ class LLMGateway:
             for provider in candidates:
                 try:
                     responses = await self._call_with_retry(provider, batch)
-                except Exception as exc:  # noqa: BLE001 - failover boundary
+                except Exception as exc:
                     last_exc = exc
                     # Fall through to the next provider. This is the failover:
                     # the retry budget is spent per provider, and exhausting it
@@ -218,10 +260,10 @@ class LLMGateway:
             if attempt > 0:
                 provider.breaker.check()
 
-            blocked_start = time.monotonic()
+            blocked_start = self._clock()
             await provider.limiter.acquire(len(requests), n_tokens)
             self.metrics.record_blocked(
-                provider.name, time.monotonic() - blocked_start
+                provider.name, self._clock() - blocked_start
             )
 
             self.metrics.record_attempt(provider.name)
@@ -248,7 +290,7 @@ class LLMGateway:
                         f"for {len(requests)} requests",
                         provider=provider.name,
                     )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 provider.breaker.record_failure()
                 self.metrics.record_failure(
                     provider.name, getattr(exc, "status", None)
@@ -265,7 +307,7 @@ class LLMGateway:
 
             provider.breaker.record_success()
             self.metrics.record_batch(provider.name, len(requests))
-            now = time.monotonic()
+            now = self._clock()
             for entry, response in zip(batch, responses, strict=True):
                 response.attempts = attempt + 1
                 # End-to-end: from the moment the caller submitted, through

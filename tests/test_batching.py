@@ -11,8 +11,6 @@ from __future__ import annotations
 import asyncio
 import time
 
-import pytest
-
 from llm_gateway.batching import Batcher
 from llm_gateway.queue import RequestQueue
 from llm_gateway.types import LLMRequest, QueuedRequest
@@ -85,8 +83,9 @@ async def test_does_not_flush_early_while_work_is_in_flight():
             await asyncio.sleep(0.008)
             q.put(entry())
 
-    asyncio.create_task(trickle())
+    task = asyncio.create_task(trickle())
     batch = await b.collect(q)
+    await task
     assert len(batch) == 4
 
 
@@ -124,8 +123,9 @@ async def test_collect_blocks_until_the_first_request_arrives():
         await asyncio.sleep(0.03)
         q.put(entry("late"))
 
-    asyncio.create_task(later())
+    task = asyncio.create_task(later())
     batch = await asyncio.wait_for(b.collect(q), 1.0)
+    await task
     assert len(batch) == 1
     assert batch[0].request.prompt == "late"
 

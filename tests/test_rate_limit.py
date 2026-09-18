@@ -64,7 +64,7 @@ async def test_concurrent_callers_never_over_issue():
     elapsed = asyncio.get_running_loop().time() - start
 
     assert issued == 50
-    assert 50 <= 200 * elapsed + 10 + 1
+    assert 200 * elapsed + 10 + 1 >= 50
 
 
 async def test_lock_is_not_held_across_sleep():

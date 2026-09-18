@@ -45,10 +45,22 @@ class RequestQueue:
             return None
         return heapq.heappop(self._heap)[2]
 
-    async def pop(self, timeout: float | None = None) -> QueuedRequest | None:
+    async def pop(
+        self, timeout: float | None = None  # noqa: ASYNC109
+    ) -> QueuedRequest | None:
         """Pop the highest-priority item, waiting up to `timeout` seconds.
 
         Returns None if the timeout expired with the queue still empty.
+
+        ASYNC109 wants callers to wrap the call in `asyncio.timeout()`
+        instead of passing a `timeout` here. That does not fit this method:
+        the deadline has to survive several iterations of the retry loop
+        below (re-checking `pop_nowait()` after each partial wait), and on
+        expiry this returns None rather than raising -- callers such as
+        `batching.py` depend on that to mean "no item arrived in time", not
+        "something failed". Switching to `asyncio.timeout()` would turn a
+        normal, expected outcome into a caught `TimeoutError` at every call
+        site for no behavioural benefit.
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
@@ -73,7 +85,7 @@ class RequestQueue:
                 return None
             try:
                 await asyncio.wait_for(self._arrival.wait(), remaining)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return None
 
     def empty(self) -> bool:

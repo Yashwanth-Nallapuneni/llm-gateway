@@ -12,7 +12,7 @@ def _percentile(values: list[float], p: float) -> float:
     ordered = sorted(values)
     # Nearest-rank. Exact enough for a report table, and it never interpolates
     # a latency that no request actually experienced.
-    k = max(0, min(len(ordered) - 1, int(round(p / 100.0 * len(ordered) + 0.5)) - 1))
+    k = max(0, min(len(ordered) - 1, round(p / 100.0 * len(ordered) + 0.5) - 1))
     return ordered[k]
 
 
@@ -23,7 +23,7 @@ class ProviderMetrics:
     failed: int = 0
     retries: int = 0
     # Keyed by status class ("4xx", "5xx", "429", "timeout", ...).
-    failures_by_class: Counter = field(default_factory=Counter)
+    failures_by_class: Counter[str] = field(default_factory=Counter)
     blocked_seconds: float = 0.0
     batch_sizes: list[int] = field(default_factory=list)
     latencies: list[float] = field(default_factory=list)
@@ -74,8 +74,8 @@ class MetricsSink:
 
     # -- reporting -----------------------------------------------------
 
-    def batch_histogram(self) -> Counter:
-        h: Counter = Counter()
+    def batch_histogram(self) -> Counter[int]:
+        h: Counter[int] = Counter()
         for m in self._providers.values():
             h.update(m.batch_sizes)
         return h
@@ -106,7 +106,7 @@ class MetricsSink:
                 f"{m.cost:>10.4f}"
             )
 
-        failures = Counter()
+        failures: Counter[str] = Counter()
         for m in self._providers.values():
             failures.update(m.failures_by_class)
         if failures:

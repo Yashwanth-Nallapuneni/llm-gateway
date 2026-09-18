@@ -58,7 +58,7 @@ class ProviderRouter:
     # Stage 3: ranking
     # ------------------------------------------------------------------
 
-    def _score(self, provider: Provider) -> tuple:
+    def _score(self, provider: Provider) -> tuple[int, float, int, str]:
         """Sort key over the survivors. Lower sorts first."""
         # WHY: headroom dominates cost. A marginally cheaper provider whose
         #      bucket is empty does not save money -- it converts money saved

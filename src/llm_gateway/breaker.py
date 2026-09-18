@@ -7,13 +7,13 @@ Normal comments -- the state machine is small and the interesting part is
 from __future__ import annotations
 
 import time
-from enum import Enum
-from typing import Callable
+from collections.abc import Callable
+from enum import StrEnum
 
 from .types import CircuitOpenError
 
 
-class State(str, Enum):
+class State(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
@@ -55,10 +55,11 @@ class CircuitBreaker:
     def state(self) -> State:
         # Transition OPEN -> HALF_OPEN lazily on read, for the same reason the
         # token bucket refills lazily: no background timer to own or shut down.
-        if self._state is State.OPEN:
-            if self._clock() - self._opened_at >= self.recovery_timeout:
-                self._state = State.HALF_OPEN
-                self._probe_in_flight = False
+        if self._state is State.OPEN and self._clock() - self._opened_at >= (
+            self.recovery_timeout
+        ):
+            self._state = State.HALF_OPEN
+            self._probe_in_flight = False
         return self._state
 
     def allows_request(self) -> bool:

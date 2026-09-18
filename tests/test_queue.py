@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import time
 
-import pytest
-
 from llm_gateway.queue import RequestQueue
 from llm_gateway.types import LLMRequest, QueuedRequest
 
@@ -47,6 +45,7 @@ async def test_pop_wakes_on_arrival():
         await asyncio.sleep(0.01)
         q.put(entry("x"))
 
-    asyncio.create_task(later())
+    task = asyncio.create_task(later())
     got = await q.pop(timeout=1.0)
+    await task
     assert got is not None and got.request.prompt == "x"

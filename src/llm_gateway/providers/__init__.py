@@ -1,4 +1,4 @@
 from .base import Provider
-from .mock import MockProvider, MockClient
+from .mock import MockClient, MockProvider
 
-__all__ = ["Provider", "MockProvider", "MockClient"]
+__all__ = ["MockClient", "MockProvider", "Provider"]

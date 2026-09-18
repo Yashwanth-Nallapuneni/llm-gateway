@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from ..breaker import CircuitBreaker
 from ..rate_limit import ProviderLimiter
-from ..types import LLMRequest, LLMResponse, ProviderCapabilities
+from ..types import AsyncLLMClient, LLMRequest, LLMResponse, ProviderCapabilities
 
 
 class Provider:
@@ -22,7 +22,7 @@ class Provider:
     def __init__(
         self,
         name: str,
-        client: Any,
+        client: AsyncLLMClient,
         capabilities: ProviderCapabilities,
         rpm_limit: float = 600,
         tpm_limit: float = 150_000,

@@ -16,8 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from llm_gateway import Batcher, LLMGateway, LLMRequest, RetryPolicy  # noqa: E402
-from llm_gateway.providers.mock import MockClient, MockProvider  # noqa: E402
+from llm_gateway import Batcher, LLMGateway, LLMRequest, RetryPolicy
+from llm_gateway.providers.mock import MockClient, MockProvider
 
 
 async def main() -> None:

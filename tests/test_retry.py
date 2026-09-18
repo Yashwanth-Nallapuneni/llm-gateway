@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import random
 
 import pytest
@@ -25,7 +24,7 @@ def test_non_retryable_statuses(status):
 
 
 @pytest.mark.parametrize(
-    "exc", [asyncio.TimeoutError(), ConnectionResetError(), OSError("reset")]
+    "exc", [TimeoutError(), ConnectionResetError(), OSError("reset")]
 )
 def test_transport_failures_are_retryable(exc):
     assert policy().should_retry(exc, 0) is True

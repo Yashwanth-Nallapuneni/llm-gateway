@@ -18,8 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from llm_gateway import Batcher, LLMGateway, LLMRequest, RetryPolicy  # noqa: E402
-from llm_gateway.providers.mock import MockClient, MockProvider  # noqa: E402
+from llm_gateway import Batcher, LLMGateway, LLMRequest, RetryPolicy
+from llm_gateway.providers.mock import MockClient, MockProvider
 
 N_REQUESTS = 500
 
@@ -71,7 +71,9 @@ async def main() -> None:
     elapsed = time.monotonic() - started
 
     assert len(responses) == N_REQUESTS
-    logprob_responses = [r for r, q in zip(responses, requests) if q.needs_logprobs]
+    logprob_responses = [
+        r for r, q in zip(responses, requests, strict=True) if q.needs_logprobs
+    ]
     assert all(r.logprobs is not None for r in logprob_responses)
 
     print(gw.metrics.report())

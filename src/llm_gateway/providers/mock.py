@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Callable
+from collections.abc import Callable
+from typing import Any
 
 from ..types import (
     LLMRequest,
@@ -196,7 +197,7 @@ def MockProvider(
     failure_threshold: int = 5,
     recovery_timeout: float = 30.0,
     client: MockClient | None = None,
-    **client_kwargs,
+    **client_kwargs: Any,
 ) -> Provider:
     """Convenience constructor: a Provider wired to a MockClient.
 

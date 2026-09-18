@@ -1,7 +1,8 @@
 """llm-gateway: rate-limited, batching, failover-capable LLM client layer."""
 
 from .batching import Batcher
-from .breaker import CircuitBreaker, State as BreakerState
+from .breaker import CircuitBreaker
+from .breaker import State as BreakerState
 from .gateway import LLMGateway
 from .metrics import MetricsSink
 from .providers.base import Provider

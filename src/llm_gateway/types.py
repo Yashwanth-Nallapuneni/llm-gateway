@@ -11,7 +11,6 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-
 # --------------------------------------------------------------------------
 # Requests and responses
 # --------------------------------------------------------------------------
@@ -76,7 +75,7 @@ class QueuedRequest:
     """A request plus the plumbing needed to return its result to the caller."""
 
     request: LLMRequest
-    future: asyncio.Future
+    future: asyncio.Future[LLMResponse]
     enqueued_at: float
     # Monotonic tiebreaker. See queue.py for why this field is load-bearing.
     seq: int = field(default_factory=lambda: next(_seq_counter))

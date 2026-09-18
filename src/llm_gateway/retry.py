@@ -7,9 +7,22 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import Iterable
+from collections.abc import Iterable
+from typing import Protocol
 
 from .types import ProviderError
+
+
+class _RandomLike(Protocol):
+    """Structural type for the `rng or random` trick below.
+
+    Both `random.Random` instances and the `random` module itself expose a
+    module/instance-level `uniform(a, b) -> float`, which is all this file
+    needs -- this Protocol lets mypy see through the union without pinning
+    the injected RNG to a concrete class.
+    """
+
+    def uniform(self, a: float, b: float) -> float: ...
 
 # WHY: retryable means "the same request, sent again, could plausibly succeed".
 #      These are server-side or transport-side conditions: the request itself
@@ -53,7 +66,7 @@ class RetryPolicy:
         self.max_delay = max_delay
         self.jitter = jitter
         # Injectable only so tests can seed it; production uses the global RNG.
-        self._rng = rng or random
+        self._rng: _RandomLike = rng or random
 
     def should_retry(self, exc: Exception, attempt: int) -> bool:
         """Retryable: 429, 500, 502, 503, 504, timeouts, conn errors.
@@ -97,7 +110,11 @@ class RetryPolicy:
         # ALT: a fixed delay -- simple, but with N clients it converges on a
         #      constant-rate DDoS against an already-struggling service.
         # ASK: Why exponential rather than linear backoff?
-        raw = self.base_delay * (2 ** attempt)
+        # `2.0 ** attempt`, not `2 ** attempt`: typeshed types int.__pow__ as
+        # returning `Any` (it must cover negative exponents, which escape int),
+        # which would otherwise leak Any through `raw` and `delay` below. The
+        # float base gives the identical value with a real `float` type.
+        raw = self.base_delay * (2.0 ** attempt)
 
         # TRAP: the cap must be applied BEFORE jitter, not after. 2**attempt
         #       overflows into minutes-then-hours by attempt 12; capping first

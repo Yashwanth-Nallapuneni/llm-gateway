@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -224,7 +225,7 @@ async def test_batches_do_not_mix_capability_requirements_end_to_end():
     async with gw:
         responses = await gw.submit_many(reqs)
 
-    for req, resp in zip(reqs, responses):
+    for req, resp in zip(reqs, responses, strict=True):
         if req.needs_logprobs:
             assert resp.provider == "fancy"
     # The cheap provider must still get the bulk of the work.
@@ -307,3 +308,31 @@ def test_composite_request_uses_a_real_member_and_ors_capabilities():
 def test_max_concurrency_must_be_positive():
     with pytest.raises(ValueError):
         MockProvider("bad", max_concurrency=0)
+
+
+async def test_injected_clock_drives_latency_and_blocked_metrics():
+    # A deterministic fake clock, offset-compatible with real
+    # time.monotonic() (it starts near "now") so the batcher's own
+    # real-time deadline math (batching.py) does not spuriously expire --
+    # see the constraint documented on LLMGateway._clock in gateway.py.
+    # Each call advances by a fixed step, so every duration the gateway
+    # derives from the clock is exactly predictable.
+    base = time.monotonic()
+    step = 0.25
+    calls = {"n": 0}
+
+    def fake_clock() -> float:
+        value = base + calls["n"] * step
+        calls["n"] += 1
+        return value
+
+    gw = LLMGateway(providers=[MockProvider("a")], retry=fast_retry(), clock=fake_clock)
+    async with gw:
+        resp = await gw.submit(LLMRequest("hello"))
+
+    # 4 clock reads for a single successful, non-retried request:
+    # enqueued_at, blocked_start, the post-acquire blocked-time read, and the
+    # final "now" used for end-to-end latency. That is exactly 3 steps.
+    assert resp.latency_s == pytest.approx(3 * step)
+    assert gw.metrics._p("a").blocked_seconds == pytest.approx(step)
+    assert calls["n"] == 4
