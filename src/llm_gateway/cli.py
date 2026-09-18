@@ -25,10 +25,14 @@ from typing import Any, TextIO
 
 from . import (
     Batcher,
+    BudgetExceeded,
+    BudgetLedger,
     LLMGateway,
     LLMRequest,
     LLMResponse,
     RetryPolicy,
+    RunStore,
+    TokenBudgetExceeded,
     __version__,
 )
 from .providers.base import Provider
@@ -316,23 +320,74 @@ async def run_gateway(
         **_no_none(max_batch_size=args.batch_size, max_wait_ms=args.max_wait_ms)
     )
     retry = RetryPolicy(**_no_none(max_attempts=args.max_attempts))
-    gateway = LLMGateway(providers=[provider], batcher=batcher, retry=retry)
 
+    store: RunStore | None = None
+    if args.store is not None:
+        # Opening the file (and reclaiming any `in_flight` rows left by a
+        # previous, crashed process -- see store.py) is a handful of quick
+        # sqlite statements against what is, at worst, a file with a few
+        # tens of thousands of rows. It runs once, before any provider call
+        # is even dispatched, so blocking the not-yet-busy event loop for it
+        # costs nothing a real sweep would notice.
+        store = RunStore(args.store)
+
+    budget: BudgetLedger | None = None
+    if args.budget is not None:
+        budget = BudgetLedger(
+            args.budget, **_no_none(max_tokens_total=args.max_total_tokens)
+        )
+
+    gateway = LLMGateway(
+        providers=[provider], batcher=batcher, retry=retry, store=store, budget=budget
+    )
+
+    # Every prompt gets a row in `rows` no matter how the run ends: a
+    # BudgetExceeded (or any other) failure is caught per-prompt by
+    # `_submit_one` and turned into an error row, never left to propagate
+    # out of `asyncio.gather` and take the results already collected for
+    # every other prompt down with it. A ceiling hit at prompt 401 of 1000
+    # must not cost the 400 results already in hand.
     rows: list[dict[str, Any]] = []
     any_failed = False
-    async with gateway:
-        requests = [build_request(item, args) for item in items]
-        results = await asyncio.gather(
-            *(_submit_one(gateway, item, req) for item, req in zip(items, requests, strict=True))
+    budget_skipped = 0
+    try:
+        async with gateway:
+            requests = [build_request(item, args) for item in items]
+            results = await asyncio.gather(
+                *(
+                    _submit_one(gateway, item, req)
+                    for item, req in zip(items, requests, strict=True)
+                )
+            )
+            for item, resp, exc in results:
+                if exc is not None:
+                    any_failed = True
+                    if isinstance(exc, (BudgetExceeded, TokenBudgetExceeded)):
+                        budget_skipped += 1
+                    rows.append(_error_to_dict(item, exc))
+                else:
+                    assert resp is not None
+                    rows.append(_response_to_dict(item, resp))
+    finally:
+        if store is not None:
+            await store.aclose()
+
+    report = gateway.metrics.report()
+    if store is not None:
+        report += (
+            f"\nstore: {gateway.served_from_store} served from store, "
+            f"{gateway.freshly_called} freshly called"
         )
-        for item, resp, exc in results:
-            if exc is not None:
-                any_failed = True
-                rows.append(_error_to_dict(item, exc))
-            else:
-                assert resp is not None
-                rows.append(_response_to_dict(item, resp))
-    return rows, any_failed, gateway.metrics.report()
+    if budget is not None:
+        report += (
+            f"\nbudget: ${budget.spent:.4f} spent of ${budget.limit_usd:.4f} limit"
+        )
+        if budget_skipped:
+            report += (
+                f"; {budget_skipped} of {len(items)} prompt(s) skipped "
+                "(budget exceeded)"
+            )
+    return rows, any_failed, report
 
 
 # --------------------------------------------------------------------------
@@ -367,12 +422,51 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--tpm", type=float, default=None)
     run.add_argument("--max-concurrency", type=int, default=None, dest="max_concurrency")
     run.add_argument("--max-attempts", type=int, default=None, dest="max_attempts")
+    run.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        metavar="USD",
+        help=(
+            "Spending ceiling in USD for this run. Once committed spend would "
+            "cross it, further prompts fail fast with a budget-exceeded error "
+            "instead of being sent to the provider; prompts already in flight "
+            "are allowed to finish, and every result obtained before the "
+            "ceiling was hit is still written out."
+        ),
+    )
+    run.add_argument(
+        "--max-total-tokens",
+        type=int,
+        default=None,
+        dest="max_total_tokens",
+        help="Optional total token ceiling for this run. Requires --budget.",
+    )
     run.add_argument("--output", default=None, help="Write JSONL here instead of stdout.")
     run.add_argument("--limit", type=int, default=None, help="Only process the first N prompts.")
     run.add_argument("--quiet", action="store_true", help="Suppress progress/guard chatter on stderr.")
     run.add_argument("--no-metrics", action="store_true", help="Do not print the metrics report.")
     run.add_argument("--dry-run", action="store_true", help="Parse and estimate only; no calls.")
     run.add_argument("--yes", action="store_true", help="Skip the cost confirmation prompt.")
+    run.add_argument(
+        "--store",
+        default=None,
+        help=(
+            "Path to a SQLite file recording every prompt's outcome. With this "
+            "set, a prompt already completed in that file is served from it "
+            "instead of calling the provider again -- crash the run and rerun "
+            "the same command to pick up where it left off."
+        ),
+    )
+    run.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Required alongside --store when the store file already has rows in "
+            "it, to confirm this run is meant to continue that sweep rather than "
+            "collide with an unrelated one."
+        ),
+    )
 
     return parser
 
@@ -382,7 +476,33 @@ def _build_parser() -> argparse.ArgumentParser:
 # --------------------------------------------------------------------------
 
 
+def _check_store_flags(args: argparse.Namespace) -> None:
+    """`--resume` only means something alongside `--store`, and an existing,
+    non-empty store file is ambiguous without it: is this run meant to
+    continue that sweep, or did it just reuse a stale path by accident? A
+    fresh or absent path needs no confirmation -- there is nothing yet to
+    collide with.
+    """
+    if args.resume and args.store is None:
+        raise CliError("--resume requires --store PATH")
+    if args.store is None:
+        return
+    has_existing_rows = os.path.isfile(args.store) and os.path.getsize(args.store) > 0
+    if has_existing_rows and not args.resume:
+        raise CliError(
+            f"--store {args.store!r} already has data in it; pass --resume to "
+            "continue that run, or point --store at a fresh path"
+        )
+
+
+def _check_budget_flags(args: argparse.Namespace) -> None:
+    if args.max_total_tokens is not None and args.budget is None:
+        raise CliError("--max-total-tokens requires --budget USD")
+
+
 def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    _check_store_flags(args)
+    _check_budget_flags(args)
     items = read_input(args.input)
     if args.limit is not None:
         items = items[: args.limit]

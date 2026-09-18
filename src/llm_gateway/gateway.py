@@ -13,11 +13,13 @@ from collections.abc import Callable
 from types import TracebackType
 
 from .batching import Batcher
+from .budget import BudgetExceeded, BudgetLedger, Reservation, TokenBudgetExceeded
 from .metrics import MetricsSink
 from .providers.base import Provider
 from .queue import RequestQueue
 from .retry import RetryPolicy
 from .routing import ProviderRouter
+from .store import RunStore, idempotency_key
 from .types import (
     LLMRequest,
     LLMResponse,
@@ -37,6 +39,8 @@ class LLMGateway:
         metrics: MetricsSink | None = None,
         *,
         clock: Callable[[], float] | None = None,
+        store: RunStore | None = None,
+        budget: BudgetLedger | None = None,
     ) -> None:
         if not providers:
             raise ValueError("at least one provider is required")
@@ -45,6 +49,19 @@ class LLMGateway:
         self.retry = retry or RetryPolicy()
         self.router = router or ProviderRouter()
         self.metrics = metrics or MetricsSink()
+        # Optional. `None` (the default) means every code path below that
+        # mentions `self.store` is simply skipped, so behaviour with no
+        # store is byte-for-byte what it was before this attribute existed.
+        self.store = store
+        # Same shape as `store`: `None` (the default) means every code path
+        # below that mentions `self.budget` is skipped, so behaviour with no
+        # budget is byte-for-byte what it was before this attribute existed.
+        self.budget = budget
+        self._providers_by_name = {p.name: p for p in providers}
+        # Run-summary counters for the CLI ("N served from store, M freshly
+        # called"). Meaningless (and left at zero) when `store` is None.
+        self.served_from_store = 0
+        self.freshly_called = 0
         # Drives enqueued_at, blocked-time and end-to-end latency below, the
         # same way TokenBucket/ProviderLimiter/CircuitBreaker/Provider take an
         # injectable clock so tests can control time deterministically.
@@ -127,6 +144,49 @@ class LLMGateway:
         return self._fatal
 
     async def submit(self, request: LLMRequest) -> LLMResponse:
+        if self.store is not None:
+            return await self._submit_with_store(self.store, request)
+        return await self._submit_uncached(request)
+
+    async def _submit_with_store(self, store: RunStore, request: LLMRequest) -> LLMResponse:
+        """Store-backed path: check first, reserve, call, then durably
+        record the outcome. See store.py for why `reserve`/`complete`/
+        `fail` are ordered the way they are -- this is just the caller of
+        that contract.
+        """
+        key = idempotency_key(request)
+        cached = await store.get_response(key)
+        if cached is not None:
+            self.served_from_store += 1
+            return cached
+
+        # `reserve` can itself return a cached response: another attempt
+        # (in this process or a previous one, resumed from the same file)
+        # finished this exact key between the `get_response` above and now.
+        # That is a benign race, not an error -- use the answer, skip the
+        # call.
+        raced = await store.reserve(request, key)
+        if raced is not None:
+            self.served_from_store += 1
+            return raced
+
+        try:
+            response = await self._submit_uncached(request)
+        except Exception as exc:
+            await store.fail(key, str(exc))
+            raise
+        else:
+            self.freshly_called += 1
+            provider = self._providers_by_name.get(response.provider)
+            cost = (
+                provider.estimated_cost(response.input_tokens, response.output_tokens)
+                if provider is not None
+                else 0.0
+            )
+            await store.complete(key, response, cost=cost)
+            return response
+
+    async def _submit_uncached(self, request: LLMRequest) -> LLMResponse:
         fatal_on_entry = self._read_fatal()
         if fatal_on_entry is not None:
             raise fatal_on_entry
@@ -218,6 +278,10 @@ class LLMGateway:
                     return
 
             remaining = batch
+            reservations: dict[int, Reservation] = {}
+            if self.budget is not None:
+                remaining, reservations = self._reserve_for_batch(candidates, batch)
+
             last_exc: Exception = ProviderError("no attempt was made")
             for provider in candidates:
                 if not remaining:
@@ -229,14 +293,88 @@ class LLMGateway:
                 # true-batch provider either resolves the whole set or none
                 # of it, so this degenerates to the old all-or-nothing
                 # failover for that case.
-                remaining, provider_exc = await self._call_with_retry(provider, remaining)
+                remaining, provider_exc = await self._call_with_retry(
+                    provider, remaining, reservations
+                )
                 if provider_exc is not None:
                     last_exc = provider_exc
 
             if remaining:
+                # Every provider that could take these entries has now
+                # either failed or exhausted its retries against them --
+                # this is the one point in a logical request's life where
+                # its failure is final, so any reservation still open for
+                # it is released here rather than carried further.
+                for entry in remaining:
+                    reservation = reservations.pop(id(entry), None)
+                    if reservation is not None:
+                        reservation.release()
                 self._fail_batch(remaining, last_exc)
         finally:
             self._in_flight -= len(batch)
+
+    def _reserve_for_batch(
+        self, candidates: list[Provider], batch: list[QueuedRequest]
+    ) -> tuple[list[QueuedRequest], dict[int, Reservation]]:
+        """Reserve budget for every entry in `batch` before it is dispatched.
+
+        One `Reservation` is made per request, up front, sized at the
+        worst-case cost among every eligible candidate for this batch
+        (`candidates`, already router-filtered and ordered best-first) --
+        not just the one that ends up serving it. This is a deliberate
+        choice between two ways to handle the fact that failover can move a
+        request to a differently-priced provider mid-flight:
+
+        1. Reserve once at the highest candidate price (chosen here), and
+           carry that single reservation across every failover attempt for
+           the request, settling or releasing it exactly once at the end.
+        2. Re-reserve on every failover: release the reservation held
+           against the failed candidate and reserve fresh against the next
+           one.
+
+        Option 2 matches the *actual* candidate more closely and so wastes
+        less headroom when a cheaper provider ends up serving the request,
+        but it violates the retry contract `budget.py` documents: releasing
+        and re-reserving between attempts of one logical request briefly
+        frees money for a concurrent request to grab, which that request
+        can then have taken back out from under it on the next attempt --
+        `committed` oscillates instead of staying pinned to the request's
+        worst case for its whole lifetime. Since a failover is just another
+        attempt of the same logical request from the ledger's point of
+        view, the same argument applies to it as to a same-provider retry.
+        Option 1 keeps the invariant simple (one reservation, closed exactly
+        once) at the cost of sometimes holding more budget than the request
+        actually ends up costing until it settles.
+
+        A request whose worst-case reservation does not fit the remaining
+        budget fails immediately with `BudgetExceeded`/`TokenBudgetExceeded`
+        -- it is not added to the returned batch, so it never enters the
+        retry/failover loop and is not retried or failed over; running out
+        of money is not a provider fault.
+        """
+        assert self.budget is not None
+        admitted: list[QueuedRequest] = []
+        reservations: dict[int, Reservation] = {}
+        for entry in batch:
+            request = entry.request
+            worst_usd = max(
+                provider.estimated_cost(
+                    request.estimated_input_tokens(), request.max_tokens
+                )
+                for provider in candidates
+            )
+            try:
+                reservation = self.budget.reserve(
+                    worst_usd, request.estimated_total_tokens()
+                )
+            except (BudgetExceeded, TokenBudgetExceeded) as exc:
+                self.metrics.rejected += 1
+                if not entry.future.done():
+                    entry.future.set_exception(exc)
+                continue
+            reservations[id(entry)] = reservation
+            admitted.append(entry)
+        return admitted, reservations
 
     def _fail_batch(self, batch: list[QueuedRequest], exc: BaseException) -> None:
         for entry in batch:
@@ -279,7 +417,10 @@ class LLMGateway:
         return results
 
     async def _call_with_retry(
-        self, provider: Provider, batch: list[QueuedRequest]
+        self,
+        provider: Provider,
+        batch: list[QueuedRequest],
+        reservations: dict[int, Reservation],
     ) -> tuple[list[QueuedRequest], Exception | None]:
         """Drive retries for `batch` against `provider`.
 
@@ -398,13 +539,22 @@ class LLMGateway:
                     # experiences; provider call time alone hides exactly
                     # the delays this library introduces.
                     response.latency_s = now - entry.enqueued_at
-                    self.metrics.record_success(
-                        provider.name,
-                        response.latency_s,
-                        provider.estimated_cost(
-                            response.input_tokens, response.output_tokens
-                        ),
+                    actual_cost = provider.estimated_cost(
+                        response.input_tokens, response.output_tokens
                     )
+                    self.metrics.record_success(
+                        provider.name, response.latency_s, actual_cost
+                    )
+                    reservation = reservations.pop(id(entry), None)
+                    if reservation is not None:
+                        # Settle with what the call actually cost, not the
+                        # worst-case estimate reserve() held -- this is what
+                        # frees an over-reservation's slack back to the
+                        # ledger for the next request.
+                        reservation.settle(
+                            actual_cost,
+                            response.input_tokens + response.output_tokens,
+                        )
                     if not entry.future.done():
                         entry.future.set_result(response)
 

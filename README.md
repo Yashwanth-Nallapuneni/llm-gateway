@@ -67,8 +67,34 @@ never printed. `--dry-run` estimates prompt count, tokens and cost without
 making any calls, and any paid provider requires a confirmed cost estimate
 (or `--yes`) before it sends a single request. A failed prompt is written as
 an `{"error": ...}` line rather than aborting the run; `gateway.metrics.report()`
-prints to stderr unless `--no-metrics`. See `llm-gateway run --help` for the
+prints to stderr unless `--no-metrics`. `--budget USD` caps total spend for the
+run: once committed spend would cross it, further prompts fail fast with a
+budget-exceeded error instead of being sent to a provider -- results already
+obtained are still written out in full, and the run exits non-zero with a
+count of how many prompts were skipped. See `llm-gateway run --help` for the
 full option list.
+
+## Resuming a crashed sweep
+
+`--store PATH` records every prompt's outcome in a SQLite file as the run
+goes, keyed by a hash of the fields that determine the answer (model,
+prompt, max_tokens, capability flags -- not priority or metadata). Rerun
+the same command with `--store` pointing at that file and `--resume`, and
+prompts already completed are served straight from the file instead of
+calling the provider again; only what never finished gets sent out:
+
+```bash
+llm-gateway run 20k_prompts.jsonl --store sweep.db --output out.jsonl
+# ...killed at prompt 14,000...
+llm-gateway run 20k_prompts.jsonl --store sweep.db --resume --output out.jsonl
+```
+
+`--resume` is required whenever `--store` points at a file that already has
+rows in it, so a stale or mistyped path fails loudly instead of silently
+merging into an unrelated run. The run summary reports how many prompts
+were served from the store versus freshly called. Replay returns each
+prompt's first answer, not a new sample -- correct for reproducing an eval,
+not for resampling at temperature > 0.
 
 ## Does it actually help?
 
@@ -261,7 +287,9 @@ loop, and the full list of self-check questions.
 
 ## Scope
 
-Client-side gateway only. Not implemented, on purpose: streaming (in
-fundamental tension with batching), cost-aware routing with a budget ceiling,
-a persistent queue that survives a crash, and adaptive rate limiting that
+Client-side gateway only. A run-wide spending ceiling (`BudgetLedger`,
+`--budget`) is supported, but routing itself is not cost-aware beyond the
+existing headroom-then-cost tiebreak. Not implemented, on purpose: streaming
+(in fundamental tension with batching), a persistent queue that survives a
+crash, and adaptive rate limiting that
 infers the real limit from observed `429`s rather than trusting configuration.
