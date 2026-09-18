@@ -136,17 +136,26 @@ times.
 
 A third, corrected attempt (a 90s cooldown between arms, arm order
 alternated across runs, 2 runs of 40 prompts each, 185 live calls, $0 on
-the free tier) fixed both problems and produced a real result: the gateway
-completed **100% of prompts in both runs (0 failures)**, while the naive
-loop lost as many as 17 of 40 prompts in one run (57.5% success). That
-reliability came at a real, disclosed cost — the gateway was far slower
-live (67s vs 7.4s median wall-clock, 30s vs 0.7s p50 latency), because it
-paces itself under the account's real ~5500 tokens/min ceiling instead of
-bursting and eating rejections the way the naive loop does; this live run
-does **not** reproduce the simulated benchmark's wall-clock advantage. The
-two runs also varied enough (naive: 23-67 requests, 0-34 rejections) that
-these numbers should be read as indicative of the effect, not a precise
-measurement of it, at N=2 on one shared account. Read
+the free tier) fixed both problems. The clean, uncontaminated result is
+run 1: naive succeeded on 33/40 prompts (**82.5%**, 7 genuine failures
+after 34 real 429s), while the gateway succeeded on 40/40 (**100%, 0
+rejections**) — at a real, disclosed cost of 32.5s vs 7.4s wall-clock,
+because it paces itself under the account's real ~5500 tokens/min ceiling
+instead of bursting and eating rejections the way the naive loop does;
+this live run does **not** reproduce the simulated benchmark's wall-clock
+advantage. Run 2's naive arm is **not** a second data point for this
+comparison: it stopped after 23 of an expected ~40+ requests because this
+task's `--max-live-calls 185` budget ran out mid-arm, and its 17 recorded
+"failures" are the harness refusing further calls
+(`LiveCallBudgetExceeded`), not real rate-limit rejections — that arm
+never got to attempt 17 of its prompts. An earlier version of this section
+quoted that 57.5%-success figure as a real result; it wasn't, and the
+mistake has been corrected here. Run 2's gateway arm did complete cleanly
+but took 15 real 429s (still reaching 100% success via retry) because the
+account's rate-limit state carried over from run 1 — the 90s cooldown
+only applies *between arms within a run*, not between one run's last arm
+and the next run's first arm, a genuine remaining limitation of this
+harness. Read
 [benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
 the full breakdown, both earlier attempts in full, and every caveat before
 citing any of these numbers. Broader real-endpoint coverage (more

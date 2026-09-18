@@ -265,10 +265,20 @@ _median [p5, p95] across 2 runs, 40 prompts/run, 185 live HTTP calls, $0 (free t
 | 5xx received | 0.0 [0.0, 0.0] | 0.0 [0.0, 0.0] |
 | successes | 33.0 [23.0, 33.0] | **40.0** [40.0, 40.0] |
 | failures | 17.0 [7.0, 17.0] | **0.0** [0.0, 0.0] |
-| success rate | 82.5% [57.5%, 82.5%] | **100.0%** [100.0%, 100.0%] |
+| success rate | 82.5% [57.5%, 82.5%]* | **100.0%** [100.0%, 100.0%] |
 | latency p50 (s) | **0.698** [0.465, 0.698] | 29.920 [1.477, 29.920] |
 | latency p95 (s) | **5.571** [0.756, 5.571] | 67.239 [32.467, 67.239] |
 | total tokens (in+out) | 6014 [4129, 6014] | 7307 [7307, 7307] |
+
+\* **Naive's success-rate and failures cells above are compromised and must
+not be read as a real measurement.** The 57.5% low end (and the 17.0
+failures high end two rows up) come from run 2's naive arm, which was cut
+off mid-run by this task's `--max-live-calls 185` ceiling, not by real
+rate-limit rejections — see the per-run table and footnote below for the
+full explanation. The only clean, uncontaminated naive number in this
+table is the 82.5% / 7-failure end of the range, from run 1. Do not average
+or split the difference between the two ends of this range; the low end is
+not a second real data point, it is a harness artifact.
 
 Live HTTP calls made this invocation: 185 (the ceiling passed to
 `--max-live-calls`; the run completed on its own, not cut off by the
@@ -328,12 +338,25 @@ needs either a raised ceiling or a much smaller workload.
 
 ### Reading this honestly
 
-- **The real result here is reliability, not speed.** The gateway completed
-  all 40 prompts in both runs — 100% success rate, 0 failures, no
-  exceptions. The naive loop lost 17 of 40 prompts in the worse run (57.5%
-  success). For a batch job or eval sweep where every prompt matters,
-  losing 17 of 40 is the failure that counts; a gateway that reliably
-  finishes the job is doing its job, even slowly.
+- **The clean result is run 1: naive 82.5% success vs gateway 100%
+  success, 0 rejections, at a real cost of 32.5s vs 7.4s wall-clock.** Run
+  1 is the only pairing where both arms ran to completion untouched by the
+  call-budget ceiling: naive sent 67 requests, took 34 real 429s, and
+  finished 33/40 prompts (7 genuine failures); the gateway sent 40
+  requests, took 0 429s, and finished 40/40. That is the real, defensible
+  result of this benchmark. **Run 2's naive arm is not a second data
+  point for this comparison and must not be quoted as one** — it stopped
+  after 23 requests because this task's `--max-live-calls 185` ceiling was
+  reached (67 + 40 + 55 + 23 = 185, exactly the cap), not because of
+  rate-limiting. Its 17 "failures" are `LiveCallBudgetExceeded` — the
+  harness refusing to place calls it had no budget left for — with zero
+  accompanying 429s, meaning 17 of its 40 prompts were simply never
+  attempted. Reporting that as "57.5% success" or "lost 17 of 40 prompts"
+  describes the harness's call budget, not naive's behavior against a real
+  rate limit; an earlier draft of this document made exactly that mistake
+  and has been corrected. For a batch job or eval sweep where every prompt
+  matters, run 1's clean 82.5% vs 100% is still the failure that counts; a
+  gateway that reliably finishes the job is doing its job, even slowly.
 
 - **The gateway is far slower here, and that is not a win — it's the
   tradeoff, stated plainly.** 67.2s vs 7.4s wall-clock; p50 latency 29.9s
@@ -388,6 +411,18 @@ needs either a raised ceiling or a much smaller workload.
   free tier, **N=2**. This is not a claim about what Groq does or what the
   gateway does against a real provider in general — it is what happened
   twice, on this account, with the ordering confound addressed.
+
+- **What we would do differently.** This attempt still produced one
+  contaminated arm (run 2's naive, truncated by the call ceiling) and one
+  residually confounded arm (run 2's gateway, carrying rate-limit state
+  from run 1). A clean live A/B needs either separate API keys per arm (so
+  no arm's account state can bleed into another's), or a cooldown inserted
+  at *every* arm boundary including between runs — not just within a run —
+  plus a `--max-live-calls` ceiling generous enough that no single arm can
+  hit it mid-run. A ceiling that truncates an arm partway through is what
+  produced this attempt's `LiveCallBudgetExceeded` artifact; size the
+  budget to the worst case (all arms at their maximum plausible request
+  count), not the expected case.
 
 ### Earlier attempts (kept for the record)
 
