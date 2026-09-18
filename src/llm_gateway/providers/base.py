@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from typing import cast
 
 from ..breaker import CircuitBreaker
 from ..rate_limit import ProviderLimiter
@@ -79,14 +80,82 @@ class Provider:
         return 0.3 * c.cost_per_1k_input + 0.7 * c.cost_per_1k_output
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
-        return await self.client.complete(request)
+        # The concurrency slot bounds actual in-flight HTTP calls, so it is
+        # acquired here, around the single network call, rather than by the
+        # caller around the whole batch. That is what lets the fallback below
+        # dispatch many requests at once while max_concurrency still means
+        # "at most this many sockets open to this provider at a time".
+        async with self.concurrency:
+            return await self.client.complete(request)
+
+    async def complete_batch_settled(
+        self, requests: list[LLMRequest]
+    ) -> list[LLMResponse | Exception]:
+        """Per-request outcomes: one entry per request, and it never raises.
+
+        This is the internal counterpart to `complete_batch()` below. The
+        gateway calls this one directly, not `complete_batch()`, because it
+        needs to know exactly *which* requests in a batch failed so it can
+        retry or fail over only those -- treating every failure as "the
+        whole batch is dead" is what let one unlucky request take fifteen
+        healthy siblings down with it.
+
+        For a real batch endpoint the whole request is one HTTP call, so it
+        can only succeed or fail as a unit: on failure every entry gets the
+        same exception object back (deliberately the same object, not
+        sixteen equal-but-distinct copies -- see the comment in
+        gateway.py on how that identity is used to avoid over-counting a
+        single atomic failure as sixteen separate ones).
+        """
+        if self.supports_batching and hasattr(self.client, "complete_batch"):
+            # One HTTP call carries the whole batch, so it costs one slot.
+            async with self.concurrency:
+                try:
+                    responses = await self.client.complete_batch(requests)
+                except Exception as exc:
+                    return [exc] * len(requests)
+            return list(responses)
+
+        # Fallback for providers with no synchronous multi-prompt endpoint
+        # (Groq, OpenRouter): coordinated concurrent dispatch. The batch was
+        # grouped for rate-limit accounting, but each member is really its
+        # own independent HTTP call, so fire them all at once instead of one
+        # after another -- a batch of 16 sequential round trips is exactly
+        # the latency the batcher was supposed to avoid.
+        #
+        # Each `complete()` call acquires its own slot from `self.concurrency`
+        # independently, so a batch of 16 against max_concurrency=2 simply
+        # serializes into 8 waves of 2: no task ever holds a slot while
+        # waiting on another slot, so there is nothing that can deadlock.
+        #
+        # `return_exceptions=True` is the whole point here: because these
+        # calls are independent, one of them raising must not stop the
+        # others from running to completion, and it must not be treated as
+        # a reason to cancel its siblings. gather() already waits for every
+        # task before returning regardless of return_exceptions, so nothing
+        # is left running in the background afterwards -- there is no
+        # orphaned-task risk that cancellation was ever needed to prevent.
+        tasks = [asyncio.create_task(self.complete(r)) for r in requests]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return cast("list[LLMResponse | Exception]", results)
 
     async def complete_batch(self, requests: list[LLMRequest]) -> list[LLMResponse]:
-        if self.supports_batching and hasattr(self.client, "complete_batch"):
-            return await self.client.complete_batch(requests)
-        # Fallback: sequential. Correct, just slower -- keeps the dispatch path
-        # uniform so the gateway never branches on capability at call time.
-        return [await self.client.complete(r) for r in requests]
+        """All-or-nothing view: for external callers, and for the true-batch
+        path where that is simply what a single HTTP call means.
+
+        Built on `complete_batch_settled()` so the two never drift apart.
+        If anything failed, this waits for every sibling to finish (settled
+        already did that) and then raises the first failure -- giving a
+        caller who does not want per-request granularity the same "batch
+        either works or raises" contract the old implementation had, minus
+        the cancel-on-first-failure behaviour that made partial success
+        impossible for the gateway to use.
+        """
+        results = await self.complete_batch_settled(requests)
+        for result in results:
+            if isinstance(result, Exception):
+                raise result
+        return cast("list[LLMResponse]", results)
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"Provider({self.name})"

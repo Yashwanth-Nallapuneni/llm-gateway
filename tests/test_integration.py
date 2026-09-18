@@ -9,7 +9,9 @@ from llm_gateway import (
     Batcher,
     LLMGateway,
     LLMRequest,
+    LLMResponse,
     NoEligibleProviderError,
+    ProviderError,
     RetryPolicy,
 )
 from llm_gateway.providers.mock import MockClient, MockProvider
@@ -250,6 +252,72 @@ async def test_concurrency_cap_bounds_simultaneous_calls():
     assert client.peak_in_flight == 2
 
 
+async def test_non_batching_fallback_dispatches_concurrently():
+    # No client.complete_batch -- forces Provider.complete_batch() onto the
+    # fallback path used by real non-batching providers (Groq, OpenRouter).
+    client = MockClient("seq", latency=0.2)
+    provider = MockProvider(
+        "seq", client=client, supports_batching=False, max_concurrency=16
+    )
+    start = time.monotonic()
+    responses = await provider.complete_batch([LLMRequest(f"p{i}") for i in range(16)])
+    elapsed = time.monotonic() - start
+
+    assert len(responses) == 16
+    assert client.peak_in_flight > 1
+    # Sequential would take ~16 * 0.2s = 3.2s; concurrent stays near one
+    # latency. Generous margin to keep this stable under load.
+    assert elapsed < 1.0
+
+
+async def test_max_concurrency_bounds_non_batching_fallback():
+    client = MockClient("seq", latency=0.05)
+    provider = MockProvider(
+        "seq", client=client, supports_batching=False, max_concurrency=2
+    )
+    responses = await asyncio.wait_for(
+        provider.complete_batch([LLMRequest(f"p{i}") for i in range(16)]),
+        timeout=5.0,
+    )
+    assert len(responses) == 16
+    assert client.peak_in_flight == 2
+
+
+async def test_non_batching_fallback_preserves_order():
+    client = MockClient("seq", latency=0.01)
+    provider = MockProvider("seq", client=client, supports_batching=False)
+    requests = [LLMRequest(f"prompt-{i}") for i in range(10)]
+    responses = await provider.complete_batch(requests)
+    for i, resp in enumerate(responses):
+        assert f"prompt-{i}" in resp.text
+
+
+async def test_non_batching_fallback_failure_propagates_without_orphans():
+    client = MockClient("flaky", latency=0.05)
+    # Every 4th call injected via fail_sequence-like behavior: simplest is
+    # fail_status set, but that would fail every call. Use fail_first_n=0 and
+    # instead flip a flag after enough calls have started by making the 5th
+    # request itself fail through fail_sequence.
+    fail_after = [None] * 4 + [503] + [None] * 11
+    client.fail_sequence = fail_after
+    provider = MockProvider(
+        "flaky", client=client, supports_batching=False, max_concurrency=16
+    )
+
+    with pytest.raises(ProviderError):
+        await asyncio.wait_for(
+            provider.complete_batch([LLMRequest(f"p{i}") for i in range(16)]),
+            timeout=5.0,
+        )
+
+    # Give any leaked task a chance to run, then confirm nothing is still in
+    # flight. `in_flight` is decremented in a `finally` around every call, so
+    # a task that was left running (never cancelled, never awaited) after the
+    # gather() raised would show up here as still in flight.
+    await asyncio.sleep(0.2)
+    assert client.in_flight == 0
+
+
 async def test_short_batch_response_fails_over_instead_of_hanging():
     short = MockClient("short")
     short.drop_responses = 1
@@ -336,3 +404,146 @@ async def test_injected_clock_drives_latency_and_blocked_metrics():
     assert resp.latency_s == pytest.approx(3 * step)
     assert gw.metrics._p("a").blocked_seconds == pytest.approx(step)
     assert calls["n"] == 4
+
+
+# --------------------------------------------------------------------------
+# Per-request blast radius on non-batching providers (Groq, OpenRouter):
+# one bad request in a batch must not take its healthy siblings down with
+# it, which is the defect the benchmark caught.
+# --------------------------------------------------------------------------
+
+
+async def test_one_transient_failure_among_sixteen_only_retries_itself():
+    # Exactly one 503 seeded into a 16-request dispatch to a non-batching
+    # provider, plus exactly one more slot for the retry that should
+    # follow. If the old all-or-nothing batch retry were still in effect,
+    # the whole batch of 16 would be retried and this client would see 32
+    # calls instead of 17.
+    sequence: list[int | None] = [None] * 16
+    sequence[7] = 503
+    sequence.append(None)  # the lone retry of the one request that failed
+    client = MockClient("fanout", latency=0.01, fail_sequence=sequence)
+    provider = MockProvider(
+        "fanout", client=client, supports_batching=False, max_concurrency=16
+    )
+    gw = LLMGateway(
+        providers=[provider],
+        batcher=Batcher(max_batch_size=16, max_wait_ms=50),
+        retry=fast_retry(),
+    )
+    async with gw:
+        responses = await gw.submit_many([LLMRequest(f"p{i}") for i in range(16)])
+
+    assert len(responses) == 16
+    assert all(r.provider == "fanout" for r in responses)
+    assert client.calls == 17
+
+
+async def test_one_permanent_failure_among_fifteen_healthy_is_isolated():
+    class PoisonClient:
+        """One prompt always 503s; everything else succeeds immediately."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, request: LLMRequest) -> LLMResponse:
+            self.calls += 1
+            if request.prompt == "poison":
+                raise ProviderError("permanently broken", status=503, provider="p")
+            return LLMResponse(text=f"ok:{request.prompt}", provider="p")
+
+    provider = MockProvider(
+        "p", client=PoisonClient(), supports_batching=False, max_concurrency=16
+    )
+    gw = LLMGateway(
+        providers=[provider],
+        batcher=Batcher(max_batch_size=16, max_wait_ms=50),
+        retry=fast_retry(max_attempts=3),
+    )
+    reqs = [LLMRequest(f"p{i}") for i in range(15)] + [LLMRequest("poison")]
+    async with gw:
+        results = await asyncio.gather(
+            *(gw.submit(r) for r in reqs), return_exceptions=True
+        )
+
+    healthy, poisoned = results[:15], results[15]
+    assert all(isinstance(r, LLMResponse) for r in healthy)
+    assert isinstance(poisoned, ProviderError)
+
+
+async def test_true_batch_provider_still_fails_as_a_unit():
+    # supports_batching=True: one call really is one HTTP round trip, so a
+    # failure still has to take the whole group down together -- unlike the
+    # fan-out path above, there is no such thing as "3 of 4 succeeded".
+    client = MockClient("atomic", fail_status=503)
+    provider = MockProvider("atomic", client=client)  # supports_batching=True (default)
+    backup = MockProvider("backup")
+    gw = LLMGateway(
+        providers=[provider, backup],
+        batcher=Batcher(max_batch_size=4, max_wait_ms=20),
+        retry=fast_retry(max_attempts=1),
+    )
+    async with gw:
+        responses = await gw.submit_many([LLMRequest(f"p{i}") for i in range(4)])
+    assert all(r.provider == "backup" for r in responses)
+
+
+async def test_complete_batch_settled_shares_one_exception_for_a_true_batch_failure():
+    # The internal per-request view still reports a real batch endpoint's
+    # failure as one event, not four -- it hands every entry back the same
+    # exception object rather than four separately-raised equal ones. The
+    # gateway's breaker/metrics accounting for the true-batch path depends
+    # on being able to tell "one call failed" from "four calls failed" by
+    # checking object identity (see the comment in gateway.py).
+    client = MockClient("atomic", fail_status=503)
+    provider = MockProvider("atomic", client=client)
+    results = await provider.complete_batch_settled([LLMRequest(f"p{i}") for i in range(4)])
+    assert len(results) == 4
+    assert all(isinstance(r, ProviderError) for r in results)
+    first = results[0]
+    assert all(r is first for r in results)
+
+
+async def test_partial_failure_leaves_no_orphaned_tasks_or_futures():
+    fail_at = {3, 9}
+    sequence: list[int | None] = [503 if i in fail_at else None for i in range(16)]
+    sequence.extend([None, None])  # both retries succeed
+    client = MockClient("fanout", latency=0.01, fail_sequence=sequence)
+    provider = MockProvider(
+        "fanout", client=client, supports_batching=False, max_concurrency=16
+    )
+    gw = LLMGateway(
+        providers=[provider],
+        batcher=Batcher(max_batch_size=16, max_wait_ms=50),
+        retry=fast_retry(),
+    )
+    async with gw:
+        responses = await gw.submit_many([LLMRequest(f"p{i}") for i in range(16)])
+        # Every future this dispatch owned is resolved (submit_many would
+        # not have returned otherwise) and the worker task that resolved
+        # them has actually finished, not just handed back its result --
+        # i.e. nothing is left running in the background.
+        await asyncio.sleep(0.05)
+        assert all(worker.done() for worker in gw._workers)
+
+    assert len(responses) == 16
+    assert all(r.provider == "fanout" for r in responses)
+    assert client.in_flight == 0
+
+
+async def test_whole_provider_outage_still_fails_over_every_request_in_the_batch():
+    # Existing failover behaviour, generalized past a batch size of 1: when
+    # every request in a multi-request dispatch fails against a
+    # non-batching provider, all of them -- not just the one blocking the
+    # retry budget -- move to the backup together.
+    client = MockClient("dead", fail_status=503)
+    dead = MockProvider("dead", client=client, supports_batching=False, max_concurrency=16)
+    backup = MockProvider("backup")
+    gw = LLMGateway(
+        providers=[dead, backup],
+        batcher=Batcher(max_batch_size=16, max_wait_ms=50),
+        retry=fast_retry(max_attempts=1),
+    )
+    async with gw:
+        responses = await gw.submit_many([LLMRequest(f"p{i}") for i in range(16)])
+    assert all(r.provider == "backup" for r in responses)

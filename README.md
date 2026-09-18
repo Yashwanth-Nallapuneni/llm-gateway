@@ -48,12 +48,53 @@ asyncio.run(main())
 500 requests go out as roughly 50 batched dispatches, paced under both the
 request and token limits, with failures retried and routed around.
 
+## Command line
+
+No Python required. `llm-gateway run` reads a file of prompts and writes one
+JSON result per line, in order:
+
+```bash
+echo '{"prompt": "Summarise document 1"}
+{"prompt": "Summarise document 2"}' | llm-gateway run - --provider mock
+```
+
+Input is a `.jsonl` file (one `{"prompt": "..."}` object per line, with
+optional `id`/`max_tokens`/`priority`/`needs_logprobs`/`needs_strict_json`/
+`model`), a `.txt` file (one prompt per line), or `-` for stdin. `--provider
+{mock,groq,openrouter}` selects the backend; for `groq`/`openrouter`, the API
+key comes from `GROQ_API_KEY`/`OPENROUTER_API_KEY` (or `--api-key`) -- it is
+never printed. `--dry-run` estimates prompt count, tokens and cost without
+making any calls, and any paid provider requires a confirmed cost estimate
+(or `--yes`) before it sends a single request. A failed prompt is written as
+an `{"error": ...}` line rather than aborting the run; `gateway.metrics.report()`
+prints to stderr unless `--no-metrics`. See `llm-gateway run --help` for the
+full option list.
+
+## Does it actually help?
+
+Measured against a simulated server enforcing 190 requests/minute, 200 prompts,
+median of 5 runs ([full method and caveats](benchmarks/README.md)):
+
+| | naive async loop | llm-gateway |
+|---|---|---|
+| 429s received | 85 | **16** |
+| requests sent | 275 | **206** |
+| wall-clock | 14.3s | **6.1s** |
+| success rate | 92.5% | 92.5% |
+| latency p99 | **0.157s** | 0.518s |
+
+The win is avoided rate-limit rejections and the wasted work behind them. The
+cost is tail latency: batching waits, and throttled requests queue instead of
+failing fast. **Below the provider's limit this library buys you nothing** —
+the same benchmark at 150 prompts is a dead heat. If you are not near a rate
+limit, do not add it.
+
 ## Status
 
-Honest current state: the core is complete, tested and typed, but every
-number below comes from the built-in mock provider. Adapters for real
-providers (Groq, OpenRouter) and a measured benchmark against them are the
-next milestones — see [ROADMAP.md](ROADMAP.md).
+The core is complete, tested and typed, and adapters for Groq and OpenRouter
+are implemented and unit-tested against a fake HTTP server. **Nothing has yet
+run against a live provider API** — that, and a benchmark against real
+endpoints, are the next milestones. See [ROADMAP.md](ROADMAP.md).
 
 ## The problem
 

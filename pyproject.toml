@@ -48,6 +48,9 @@ Homepage = "https://github.com/Yashwanth-Nallapuneni/llm-gateway"
 Repository = "https://github.com/Yashwanth-Nallapuneni/llm-gateway"
 Issues = "https://github.com/Yashwanth-Nallapuneni/llm-gateway/issues"
 
+[project.scripts]
+llm-gateway = "llm_gateway.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_gateway"]
 

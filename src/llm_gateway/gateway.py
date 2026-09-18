@@ -217,23 +217,24 @@ class LLMGateway:
                     self._fail_batch(batch, exc)
                     return
 
+            remaining = batch
             last_exc: Exception = ProviderError("no attempt was made")
             for provider in candidates:
-                try:
-                    responses = await self._call_with_retry(provider, batch)
-                except Exception as exc:
-                    last_exc = exc
-                    # Fall through to the next provider. This is the failover:
-                    # the retry budget is spent per provider, and exhausting it
-                    # is the signal to move on rather than to give up.
-                    continue
+                if not remaining:
+                    break
+                # `_call_with_retry` resolves every entry it can -- partially,
+                # for a non-batching provider whose members fail
+                # independently -- and hands back only the ones it could
+                # not. Only those move on to the next candidate; a
+                # true-batch provider either resolves the whole set or none
+                # of it, so this degenerates to the old all-or-nothing
+                # failover for that case.
+                remaining, provider_exc = await self._call_with_retry(provider, remaining)
+                if provider_exc is not None:
+                    last_exc = provider_exc
 
-                for entry, response in zip(batch, responses, strict=True):
-                    if not entry.future.done():
-                        entry.future.set_result(response)
-                return
-
-            self._fail_batch(batch, last_exc)
+            if remaining:
+                self._fail_batch(remaining, last_exc)
         finally:
             self._in_flight -= len(batch)
 
@@ -242,84 +243,184 @@ class LLMGateway:
             if not entry.future.done():
                 entry.future.set_exception(exc)
 
+    async def _settle(
+        self, provider: Provider, requests: list[LLMRequest]
+    ) -> list[LLMResponse | Exception]:
+        """One dispatch round against `provider`, one outcome per request.
+
+        A lone request bypasses the batch machinery entirely and calls
+        `provider.complete()` directly, same as before this module grew
+        batch awareness. Anything larger goes through
+        `Provider.complete_batch_settled()`, which is itself either the
+        all-or-nothing call a true-batch provider makes it, or N
+        independent calls for a fan-out one -- this method does not need
+        to know which; it only needs the per-request outcomes either way.
+        """
+        if len(requests) == 1:
+            try:
+                return [await provider.complete(requests[0])]
+            except Exception as solo_exc:
+                return [solo_exc]
+
+        results = await provider.complete_batch_settled(requests)
+        if len(results) != len(requests):
+            # A provider that answers a batch of N with fewer than N
+            # responses would otherwise leave the unmatched callers awaiting
+            # futures nobody resolves. Treat it as one failure shared by
+            # every request in the round -- the same way a true-batch
+            # provider failing outright is one failure shared by all of
+            # them. status=None makes it retryable.
+            short_batch_exc: Exception = ProviderError(
+                f"{provider.name} returned {len(results)} responses "
+                f"for {len(requests)} requests",
+                provider=provider.name,
+            )
+            return [short_batch_exc] * len(requests)
+        return results
+
     async def _call_with_retry(
         self, provider: Provider, batch: list[QueuedRequest]
-    ) -> list[LLMResponse]:
-        requests = [q.request for q in batch]
-        n_tokens = sum(r.estimated_total_tokens() for r in requests)
+    ) -> tuple[list[QueuedRequest], Exception | None]:
+        """Drive retries for `batch` against `provider`.
 
+        Returns `(leftover, last_exc)`. `leftover` is the subset of `batch`
+        this provider could not resolve inside its retry budget -- empty
+        when everything succeeded -- for the caller to hand to the next
+        candidate provider. `last_exc` is the most recent failure seen,
+        kept so the caller has something to report if every provider is
+        eventually exhausted. Every entry NOT in `leftover` has already had
+        its future resolved with a successful response by the time this
+        returns -- callers must not resolve them again.
+
+        `attempt` is shared by every entry still `pending` in a given
+        round: they were dispatched together, so they back off together
+        too, even though a fan-out provider can resolve different entries
+        on different rounds (one member retries while its siblings are
+        already done). That keeps one retry-delay computation per round
+        instead of per request, which matches the granularity a provider's
+        Retry-After header speaks at, and it means `response.attempts`
+        still ends up correct per entry: it is stamped from the round that
+        actually resolved that entry, not from whatever round the batch
+        started at.
+        """
+        pending = list(batch)
+        leftover: list[QueuedRequest] = []
+        last_exc: Exception | None = None
         attempt = 0
-        while True:
-            # Only on retries. The router already consumed this provider's
-            # admission (and, in HALF_OPEN, its single probe permit) when it
-            # selected the provider; checking again here would spend a second
-            # permit that does not exist, reject our own probe, and leave the
-            # breaker stuck HALF_OPEN with an in-flight probe that never
-            # resolves -- a provider that has recovered would never be used
-            # again.
-            if attempt > 0:
-                provider.breaker.check()
 
-            blocked_start = self._clock()
-            await provider.limiter.acquire(len(requests), n_tokens)
-            self.metrics.record_blocked(
-                provider.name, self._clock() - blocked_start
-            )
-
-            self.metrics.record_attempt(provider.name)
+        while pending:
+            requests = [q.request for q in pending]
+            n_tokens = sum(r.estimated_total_tokens() for r in requests)
             try:
-                # The concurrency slot is held only around the network call --
-                # not across the rate-limiter wait above, and not across the
-                # retry sleep below. Holding it while sleeping would let a few
-                # failing requests occupy every slot doing nothing, starving
-                # healthy traffic behind them.
-                async with provider.concurrency:
-                    if len(requests) == 1:
-                        responses = [await provider.complete(requests[0])]
-                    else:
-                        responses = await provider.complete_batch(requests)
+                # Only on retries. The router already consumed this
+                # provider's admission (and, in HALF_OPEN, its single probe
+                # permit) when it selected the provider; checking again
+                # here would spend a second permit that does not exist,
+                # reject our own probe, and leave the breaker stuck
+                # HALF_OPEN with an in-flight probe that never resolves --
+                # a provider that has recovered would never be used again.
+                if attempt > 0:
+                    provider.breaker.check()
 
-                # A provider that answers a batch of N with fewer than N
-                # responses would otherwise leave the unmatched callers
-                # awaiting futures nobody resolves. Treat it as a provider
-                # failure so it is retried, counted, and fed to the breaker
-                # like any other bad response. status=None makes it retryable.
-                if len(responses) != len(requests):
-                    raise ProviderError(
-                        f"{provider.name} returned {len(responses)} responses "
-                        f"for {len(requests)} requests",
-                        provider=provider.name,
-                    )
+                blocked_start = self._clock()
+                await provider.limiter.acquire(len(requests), n_tokens)
+                self.metrics.record_blocked(
+                    provider.name, self._clock() - blocked_start
+                )
+                self.metrics.record_attempt(provider.name)
+
+                # The concurrency slot is acquired inside provider.complete()
+                # / provider.complete_batch_settled(), around each
+                # individual network call -- not here, and not across the
+                # rate-limiter wait above or the retry sleep below.
+                # Acquiring it per call (rather than once per batch, here)
+                # is what lets a non-batching provider's fallback dispatch
+                # many requests concurrently while max_concurrency still
+                # bounds actual open sockets instead of batches; holding it
+                # across the retry sleep would let a few failing requests
+                # occupy every slot doing nothing, starving healthy traffic
+                # behind them.
+                results = await self._settle(provider, requests)
             except Exception as exc:
+                # The breaker check or the limiter itself raised, before any
+                # request was even attempted this round -- there are no
+                # per-request outcomes to look at, so every pending entry
+                # shares this one cause.
+                last_exc = exc
                 provider.breaker.record_failure()
                 self.metrics.record_failure(
                     provider.name, getattr(exc, "status", None)
                 )
-                if not self.retry.should_retry(exc, attempt):
-                    raise
-                self.metrics.record_retry(provider.name)
-                delay = self.retry.delay_for(
-                    attempt, self.retry.retry_after_from(exc)
-                )
-                attempt += 1
-                await asyncio.sleep(delay)
-                continue
+                leftover.extend(pending)
+                return leftover, last_exc
 
-            provider.breaker.record_success()
             self.metrics.record_batch(provider.name, len(requests))
+
             now = self._clock()
-            for entry, response in zip(batch, responses, strict=True):
-                response.attempts = attempt + 1
-                # End-to-end: from the moment the caller submitted, through
-                # queueing, batching, rate-limiter waits and retries. This is
-                # the latency the caller actually experiences; provider call
-                # time alone hides exactly the delays this library introduces.
-                response.latency_s = now - entry.enqueued_at
-                self.metrics.record_success(
-                    provider.name,
-                    response.latency_s,
-                    provider.estimated_cost(
-                        response.input_tokens, response.output_tokens
-                    ),
-                )
-            return responses
+            retryable: list[QueuedRequest] = []
+            # A real batch endpoint fails as a single HTTP call:
+            # complete_batch_settled() hands every member of the batch back
+            # the *same* exception object in that case (see base.py).
+            # Deduplicating by identity here is what makes the breaker (and
+            # the failure counter) see that as the one attempt it actually
+            # was, rather than N. Without this, one failed 8-request batch
+            # call could push a breaker sized for 5 consecutive failures
+            # straight to open on its own -- exactly the over-eager tripping
+            # this file is trying to avoid, just from the opposite
+            # direction. A fan-out (non-batching) provider never produces
+            # two entries sharing an exception object -- each is its own
+            # call and raises its own exception -- so nothing collides here
+            # and every failure is still counted on its own; that is also
+            # what makes a single bad request out of sixteen move the
+            # breaker's consecutive-failure count by exactly one, nowhere
+            # near enough to trip a threshold of five by itself.
+            seen_failures: set[int] = set()
+            for entry, result in zip(pending, results, strict=True):
+                if isinstance(result, Exception):
+                    last_exc = result
+                    if id(result) not in seen_failures:
+                        seen_failures.add(id(result))
+                        provider.breaker.record_failure()
+                    self.metrics.record_failure(
+                        provider.name, getattr(result, "status", None)
+                    )
+                    if self.retry.should_retry(result, attempt):
+                        retryable.append(entry)
+                    else:
+                        leftover.append(entry)
+                else:
+                    provider.breaker.record_success()
+                    response = result
+                    response.attempts = attempt + 1
+                    # End-to-end: from the moment the caller submitted,
+                    # through queueing, batching, rate-limiter waits and
+                    # retries. This is the latency the caller actually
+                    # experiences; provider call time alone hides exactly
+                    # the delays this library introduces.
+                    response.latency_s = now - entry.enqueued_at
+                    self.metrics.record_success(
+                        provider.name,
+                        response.latency_s,
+                        provider.estimated_cost(
+                            response.input_tokens, response.output_tokens
+                        ),
+                    )
+                    if not entry.future.done():
+                        entry.future.set_result(response)
+
+            if not retryable:
+                return leftover, last_exc
+
+            # retryable is non-empty only because at least one iteration of
+            # the loop above hit the isinstance(result, Exception) branch,
+            # which always sets last_exc first -- so this is never None here.
+            assert last_exc is not None
+            self.metrics.record_retry(provider.name)
+            delay = self.retry.delay_for(
+                attempt, self.retry.retry_after_from(last_exc)
+            )
+            attempt += 1
+            await asyncio.sleep(delay)
+            pending = retryable
+
+        return leftover, last_exc
