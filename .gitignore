@@ -8,3 +8,9 @@ build/
 *.egg-info/
 .venv/
 .reference/
+
+# Local session notes and secrets -- never published
+HANDOFF.md
+.env
+*.key
+.groq_key
