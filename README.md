@@ -20,6 +20,9 @@ server, no caching or prompt management.
 pip install aiollm-gateway
 ```
 
+![Terminal recording of examples/failover_demo.py: the router sends traffic to the cheap primary provider, the primary starts failing and the circuit breaker moves traffic to backup, then the primary recovers and traffic moves back — ending with the batching/latency/cost metrics report](docs/failover-demo.svg)
+<sub>`examples/failover_demo.py`, real captured output — primary fails, the breaker trips traffic to backup, then recovers.</sub>
+
 ## Quickstart
 
 This runs as-is — no API key, no network. `MockProvider` ships with the library

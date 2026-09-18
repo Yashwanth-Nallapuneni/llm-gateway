@@ -36,13 +36,18 @@
 # keep workflow_dispatch only.
 #
 # Missing-secret behaviour: if GROQ_API_KEY has not been configured yet, the
-# live tests skip themselves (they check for the env var and self-skip) and
-# this job is expected to finish green with all live tests reported as
-# skipped. We deliberately do NOT fail the job in that case: a red workflow
-# that solo maintainers cannot fix without also fixing GitHub secrets (which
-# requires repo admin access, done outside of any PR) is just persistent
-# noise. A green run with "skipped" in the log is easy to notice and
-# understand; a permanently red one gets ignored.
+# live tests skip themselves (they check for the env var and self-skip). This
+# job deliberately does NOT let that pass as green, though: a run where every
+# live test self-skipped never actually exercised the real Groq API, so a
+# green badge in that state would be pure false assurance -- indistinguishable
+# from the outside from a run where the tests genuinely passed. The
+# "Check live test results actually ran" step below parses the JUnit XML
+# pytest writes and fails the job with a clear message if fewer than the
+# expected number of live tests actually PASSED (as opposed to having been
+# skipped) -- see that step for the exact floor and reasoning. So: red here
+# now means either a real test failure/error, or GROQ_API_KEY missing/wrong --
+# both are things a maintainer with repo-secret access needs to act on, which
+# is exactly who is expected to run this manual/scheduled workflow.
 #
 # Security note: `pull_request_target` is intentionally never used here. That
 # trigger runs workflow code from the base branch but checks out and can be
@@ -84,10 +89,109 @@ jobs:
         run: pip install -e ".[dev]"
 
       # GROQ_API_KEY is scoped to this step only (not the job or workflow),
-      # and is never echoed, dumped via `env`, or exposed via `set -x`. If the
-      # secret is unset, the live tests are expected to self-skip and this
-      # step still exits 0.
+      # and is never echoed, dumped via `env`, or exposed via `set -x`.
+      #
+      # This step intentionally does not fail the job by itself on a non-zero
+      # pytest exit -- the exit code is captured into $GITHUB_ENV and checked
+      # explicitly by the next step, alongside the JUnit XML pass/skip
+      # counts, so both "a live test actually failed" and "every live test
+      # quietly self-skipped" are reported with one clear message instead of
+      # pytest's default (and, for the all-skipped case, misleadingly green)
+      # exit status.
       - name: Run live tests against the real Groq API
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: pytest -m live -q
+        run: |
+          set +e
+          pytest -m live -q --junit-xml=live-results.xml
+          echo "PYTEST_EXIT_CODE=$?" >> "$GITHUB_ENV"
+
+      # Guards against the exact failure mode this workflow exists to catch:
+      # a green run that verified nothing because GROQ_API_KEY was never
+      # configured (or was configured wrong) and every live test
+      # self-skipped. pytest alone can't surface that -- "all skipped" is a
+      # clean exit 0 -- so this step parses the JUnit XML from the step above
+      # and asserts a minimum number of tests actually PASSED (not skipped).
+      #
+      # The floor is 5, not 6: tests/test_live_groq.py currently defines 6
+      # tests under @pytest.mark.live, and exactly one of them
+      # (test_real_429_with_retry_after) is a *permanent*, intentional skip
+      # -- it deliberately does not attempt to provoke a real 429, to avoid
+      # burning Groq quota (see that test's own docstring and
+      # docs/LIVE_TESTING.md). So "every live test genuinely ran" looks like
+      # 5 passed + 1 skipped, never 6 passed. If tests/test_live_groq.py
+      # gains or loses live tests, update MIN_LIVE_PASSED to match.
+      #
+      # This step never prints GROQ_API_KEY or any other secret -- only test
+      # names and pass/fail/skip counts read back from the JUnit XML.
+      - name: Check live test results actually ran
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+
+          MIN_LIVE_PASSED = 5  # see comment on the step above
+
+          try:
+              root = ET.parse("live-results.xml").getroot()
+          except FileNotFoundError:
+              print(
+                  "::error::live-results.xml was not produced -- pytest did not "
+                  "run to completion. Check the previous step's log."
+              )
+              sys.exit(1)
+
+          suites = root.findall(".//testsuite") if root.tag != "testsuite" else [root]
+
+          total = passed = skipped = failed = errored = 0
+          skipped_names = []
+          for suite in suites:
+              for case in suite.findall("testcase"):
+                  total += 1
+                  if case.find("skipped") is not None:
+                      skipped += 1
+                      skipped_names.append(case.get("name", "?"))
+                  elif case.find("failure") is not None:
+                      failed += 1
+                  elif case.find("error") is not None:
+                      errored += 1
+                  else:
+                      passed += 1
+
+          print("== Live test summary ==")
+          print(
+              f"total={total} passed={passed} skipped={skipped} "
+              f"failed={failed} errored={errored} "
+              f"(floor: {MIN_LIVE_PASSED} passed)"
+          )
+          if skipped_names:
+              print(f"skipped: {', '.join(skipped_names)}")
+
+          pytest_exit_code = os.environ.get("PYTEST_EXIT_CODE", "1")
+          problems = []
+
+          if pytest_exit_code != "0":
+              problems.append(
+                  f"pytest exited with status {pytest_exit_code} -- one or "
+                  "more live tests failed or errored."
+              )
+
+          if passed < MIN_LIVE_PASSED:
+              problems.append(
+                  f"only {passed} live test(s) actually passed (need at "
+                  f"least {MIN_LIVE_PASSED}) -- live tests were skipped. Is "
+                  "the GROQ_API_KEY secret configured for the 'live-tests' "
+                  "environment? A green run must mean the tests actually "
+                  "executed against the real Groq API, not that they "
+                  "self-skipped."
+              )
+
+          if problems:
+              for problem in problems:
+                  print(f"::error::{problem}")
+              sys.exit(1)
+
+          print("Live tests genuinely ran against the real Groq API. OK.")
+          PY

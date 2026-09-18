@@ -33,6 +33,37 @@ its own `skipif` on `GROQ_API_KEY` being unset, so the file is a no-op (all
 skips) for anyone who checks this repo out without a key -- the offline
 suite, `ruff`, and `mypy` all stay green either way.
 
+## CI: a green run means the tests actually ran
+
+`.github/workflows/live.yml` (manual `workflow_dispatch`, plus a weekly
+Monday canary) runs `pytest -m live -q --junit-xml=live-results.xml` against
+the real Groq API. Locally, "all skipped" and "all passed" both look like a
+plain green `pytest` exit code -- that ambiguity is exactly what would make
+the workflow's badge meaningless from the outside, since the run log itself
+isn't publicly readable. So the workflow does not trust pytest's exit code
+by itself: a second step parses `live-results.xml` and requires at least
+**5** live tests to have actually **passed** (not skipped).
+
+That floor of 5, not 6, accounts for `test_real_429_with_retry_after`, which
+is a *permanent*, intentional `pytest.skip()` (see "What each live test
+checks" below) -- so a fully successful run looks like 5 passed + 1 skipped,
+never 6 passed. If `GROQ_API_KEY` is missing or wrong, every live test
+self-skips, `passed` comes back as `0`, and the job fails with:
+
+```
+only 0 live test(s) actually passed (need at least 5) -- live tests were
+skipped. Is the GROQ_API_KEY secret configured for the 'live-tests'
+environment? A green run must mean the tests actually executed against the
+real Groq API, not that they self-skipped.
+```
+
+The job output also always prints a one-line summary (`total=... passed=...
+skipped=... failed=... errored=...` plus the names of any skipped tests) so
+a maintainer can see at a glance what happened -- the API key itself is
+never printed, echoed, or dumped. If `tests/test_live_groq.py` gains or
+loses `@pytest.mark.live` tests, update `MIN_LIVE_PASSED` in the workflow's
+"Check live test results actually ran" step to match.
+
 ## Why live tests are excluded by default
 
 - They need a real API key and network access, neither of which CI or a
