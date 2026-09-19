@@ -5,8 +5,8 @@ against a server with a real, enforced rate limit and occasional transient
 failures, what's the actual difference between
 
 - **naive**: `asyncio.gather` over every prompt through a bounded
-  semaphore, with a *properly implemented* retry — exponential backoff,
-  full jitter, `Retry-After` respected — on 429/5xx. This is not a
+  semaphore, with a *properly implemented* retry (exponential backoff,
+  full jitter, `Retry-After` respected) on 429/5xx. This is not a
   strawman: the only thing it's missing on purpose is rate limiting,
   because that's the variable under test. It reuses `llm_gateway.RetryPolicy`
   for the backoff/jitter/classification logic itself (not for the rate
@@ -17,7 +17,7 @@ failures, what's the actual difference between
   policy.
 
 Both arms are pointed at their own instance of the same simulated server
-(`SimClient`, a small subclass of `llm_gateway.providers.mock.MockClient` —
+(`SimClient`, a small subclass of `llm_gateway.providers.mock.MockClient`;
 see "Threats to validity" below for exactly what "same" means here).
 
 ## Run it
@@ -33,8 +33,8 @@ to also dump every raw per-run number, so a skeptical reader can recompute
 the medians and percentiles themselves instead of taking the summary on
 faith.
 
-Every tunable — prompt count, server RPM, injected failure rate, latency
-distribution, retry budget, batch shape, pricing — is a CLI flag; run
+Every tunable (prompt count, server RPM, injected failure rate, latency
+distribution, retry budget, batch shape, pricing) is a CLI flag; run
 `python3 benchmarks/bench.py --help` for the full list. Increase `--runs`
 for tighter percentile estimates; the default is 10.
 
@@ -43,13 +43,13 @@ for tighter percentile estimates; the default is 10.
 - **naive** should rack up a real count of 429s as soon as its unthrottled
   burst exceeds the server's configured RPM. Because the server enforces a
   genuine 60-second sliding window but naive's retry budget is finite, some
-  requests can exhaust their retries *before* the window frees capacity —
+  requests can exhaust their retries *before* the window frees capacity,
   meaning naive is not guaranteed 100% eventual success the way a
   patient-enough retry loop would be.
 - **gateway** should show 429s approaching zero, because the token bucket
   paces requests under the limit *before* they're sent rather than
   discovering the limit by exceeding it. It should also send meaningfully
-  fewer total requests to the server. The cost should be added latency —
+  fewer total requests to the server. The cost should be added latency:
   a caller occasionally waits in the gateway's queue for capacity that
   naive would have burned as a rejected-then-retried call instead.
 
@@ -77,7 +77,7 @@ parameters:
 
 _median [p5, p95] across 5 runs, 200 prompts/run_
 
-**Configuration A — 200 prompts against a 190/min server (over the limit).**
+**Configuration A: 200 prompts against a 190/min server (over the limit).**
 This is the regime the library is built for.
 
 | metric | naive | gateway |
@@ -94,7 +94,7 @@ This is the regime the library is built for.
 | latency p99 (s) | **0.157** [0.151, 0.160] | 0.518 [0.419, 4.482] |
 | est. cost (USD) | 0.3563 [0.3531, 0.3574] | 0.3579 [0.3544, 0.3603] |
 
-**Configuration B — 150 prompts against the same server (inside the limit).**
+**Configuration B: 150 prompts against the same server (inside the limit).**
 Run because a benchmark that only reports its favourable regime is marketing.
 
 | metric | naive | gateway |
@@ -147,7 +147,7 @@ conclusions materially. They are recorded here rather than quietly fixed.
 1. **A batch endpoint that does not exist.** The first run configured the
    simulated server with `supports_batching=True`, so a 16-prompt batch counted
    as ONE request, producing a headline "14 requests sent vs 275". Neither Groq
-   nor OpenRouter — the two providers this library ships adapters for — has a
+   nor OpenRouter (the two providers this library ships adapters for) has a
    synchronous multi-prompt endpoint, so that saving is uncollectable in
    production. The benchmark now defaults to no batch endpoint; `--batch-endpoint`
    models the other case for providers that genuinely offer one.
@@ -164,7 +164,7 @@ conclusions materially. They are recorded here rather than quietly fixed.
 
 Everything above is the simulated server: it is fully reproducible and, by
 construction, cannot say anything about how a real provider actually
-behaves. This section is the other half — the same two arms, the same
+behaves. This section is the other half: the same two arms, the same
 `run_naive`/`run_gateway` code paths and the same metric collection, run
 against the real Groq API (`--provider groq`) instead of `SimClient`. It
 answers a narrower question honestly, rather than a broader one dishonestly:
@@ -172,19 +172,19 @@ not "is the gateway faster," but "does the live path work at all, and does
 pacing under a real token ceiling actually change the outcome."
 
 Two earlier attempts, run before this one, are kept below rather than
-deleted — both were diagnosed and fixed, and that record is worth more than
+deleted. Both were diagnosed and fixed, and that record is worth more than
 a clean-looking number with no history:
 
 1. **Attempt 1 was misconfigured.** The gateway arm's rate-limit ceiling
-   was set from a misread header — roughly 200x too high on the dimension
-   that actually binds — so it provided close to no pacing. Both arms got
+   was set from a misread header (roughly 200x too high on the dimension
+   that actually binds), so it provided close to no pacing. Both arms got
    hammered with real 429s and the run proved nothing about the library.
 2. **Attempt 2 fixed the ceiling but confounded the comparison.** With the
    correct ceiling in place, `run_naive` executed immediately before
    `run_gateway` inside the same invocation, against the same Groq account.
    Naive's burst pushed the account into a multi-thousand-token deficit that
-   took on the order of a minute to clear, so the gateway arm — correctly
-   paced at/under the real limit — still absorbed 429s left over from
+   took on the order of a minute to clear, so the gateway arm, correctly
+   paced at/under the real limit, still absorbed 429s left over from
    naive's overshoot moments earlier. The comparison measured cross-arm
    contamination, not the gateway.
 
@@ -212,10 +212,10 @@ independent buckets (requests and tokens) rather than one: on this account,
 the token dimension is the one that binds, and a client that only paces
 requests would miss it entirely. This also matches `groq_provider()`'s own
 built-in default (`src/llm_gateway/providers/groq.py`), which already sets
-`tpm_limit=6_000` — the codebase's own default was right about the token
+`tpm_limit=6_000`, so the codebase's own default was right about the token
 ceiling all along. `bench.py`'s live defaults are now `--live-tpm-limit
 5500` (just under the real 6000) and `--live-rpm-limit 900` (deliberately
-generous — requests were never the constraint under test).
+generous, since requests were never the constraint under test).
 
 To fix the ordering confound from attempt 2, `bench.py` gained
 `--arm-cooldown` (a real pause between arms so the account's token bucket
@@ -274,7 +274,7 @@ _median [p5, p95] across 2 runs, 40 prompts/run, 185 live HTTP calls, $0 (free t
 not be read as a real measurement.** The 57.5% low end (and the 17.0
 failures high end two rows up) come from run 2's naive arm, which was cut
 off mid-run by this task's `--max-live-calls 185` ceiling, not by real
-rate-limit rejections — see the per-run table and footnote below for the
+rate-limit rejections; see the per-run table and footnote below for the
 full explanation. The only clean, uncontaminated naive number in this
 table is the 82.5% / 7-failure end of the range, from run 1. Do not average
 or split the difference between the two ends of this range; the low end is
@@ -285,11 +285,11 @@ Live HTTP calls made this invocation: 185 (the ceiling passed to
 budget). Raw per-run numbers are in `/tmp/bench_out/live_run.json`; full
 console output is in `/tmp/bench_out/live_run.log`.
 
-Per-run numbers, not medians — with N=2, the median table above hides which
+Per-run numbers, not medians: with N=2, the median table above hides which
 arm ran when. Execution order (per `--arm-order alternate`, with `--arm-cooldown
 90` between the two arms of each run and 90s waited out before the first arm
 of the whole invocation, but **no** cooldown between run 1's last arm and
-run 2's first arm — see below for why that gap matters):
+run 2's first arm (see below for why that gap matters):
 
 | order | run | arm | wall-clock (s) | requests sent | 429s | successes | failures | success rate | tokens (in+out) |
 |---|---|---|---|---|---|---|---|---|---|
@@ -299,41 +299,41 @@ run 2's first arm — see below for why that gap matters):
 | 4th | 2 | naive | 0.987 | 23 | 0 | 23 | 17 | 57.5%* | 4129 (3761 in / 368 out) |
 
 \* Run 2's naive arm is not a clean measurement of naive's rate-limit
-behavior — it sent only 23 of an expected ~40+ requests before the whole
+behavior. It sent only 23 of an expected ~40+ requests before the whole
 invocation's `--max-live-calls 185` ceiling was reached (`67 + 40 + 55 + 23
 = 185`, exactly the cap). `LiveCallBudgetExceeded` (raised by
 `LiveCallBudget.take()` in `bench.py`) counts as a failure with no
 accompanying 429, which is where 17 of its 17 failures and 0.0% of its 429s
-actually come from — a budget-cutoff artifact of this task's deliberately
+actually come from: a budget-cutoff artifact of this task's deliberately
 tight call ceiling, not a statement about naive's real success rate.
 
 Reading the order column against the arm-cooldown design directly answers
 the ordering-bias question this task asked: **run 1's gateway (2nd) is the
-clean result** — it ran a full 90s after naive's burst, and got 0 429s /
+clean result:** it ran a full 90s after naive's burst, and got 0 429s /
 100% success, matching the hypothesis and directly contradicting the
 uncorrected attempt 2 above (68.3s / 44% 429s / 64% success). **Run 2's
-gateway (3rd) shows the cooldown's remaining gap** — it ran immediately
+gateway (3rd) shows the cooldown's remaining gap:** it ran immediately
 after run 1's gateway finished, with no cooldown *between runs* (only
 `--arm-cooldown` applies *within* a run, between that run's two arms), and
 picked up 15 real 429s (27% of 55 requests) despite being configured
 identically to run 1's gateway. It still reached 100% success via retries,
 so this is a milder, second-order version of the same account-state-bleed
-problem `--arm-cooldown` was built to fix — just one boundary short of
+problem `--arm-cooldown` was built to fix, just one boundary short of
 fully fixed (arm-to-arm within a run, not run-to-run). This is a genuine,
 disclosed limitation of this benchmark's current methodology, not a defect
 in `llm_gateway`: every 429 in both runs was correctly surfaced as
 `ProviderError(status=429)` and correctly retried, and the gateway's own
-pacing behaved identically (5500 tpm) in both cases — what differed was how
+pacing behaved identically (5500 tpm) in both cases: what differed was how
 much real capacity the shared account actually had left at the moment each
 arm started. Closing this residual gap (a cooldown at every arm boundary,
 including between the last arm of one run and the first arm of the next,
-not just within a run) is the natural next fix and was not attempted here —
+not just within a run) is the natural next fix and was not attempted here;
 this task's live-call budget does not comfortably cover verifying it (see
 below).
 
 Combined with the 160 calls spent on the two earlier live attempts above,
 this task has now used **345 of the project's 350-call live-quota ceiling
-across all live attempts to date — 5 calls remain.** Any further live work
+across all live attempts to date; 5 calls remain.** Any further live work
 needs either a raised ceiling or a much smaller workload.
 
 ### Reading this honestly
@@ -343,13 +343,13 @@ needs either a raised ceiling or a much smaller workload.
   1 is the only pairing where both arms ran to completion untouched by the
   call-budget ceiling: naive sent 67 requests, took 34 real 429s, and
   finished 33/40 prompts (7 genuine failures); the gateway sent 40
-  requests, took 0 429s, and finished 40/40. That is the real, defensible
+  requests, took 0 429s, and finished 40/40. That is the real
   result of this benchmark. **Run 2's naive arm is not a second data
-  point for this comparison and must not be quoted as one** — it stopped
+  point for this comparison and must not be quoted as one:** it stopped
   after 23 requests because this task's `--max-live-calls 185` ceiling was
   reached (67 + 40 + 55 + 23 = 185, exactly the cap), not because of
-  rate-limiting. Its 17 "failures" are `LiveCallBudgetExceeded` — the
-  harness refusing to place calls it had no budget left for — with zero
+  rate-limiting. Its 17 "failures" are `LiveCallBudgetExceeded`, the
+  harness refusing to place calls it had no budget left for, with zero
   accompanying 429s, meaning 17 of its 40 prompts were simply never
   attempted. Reporting that as "57.5% success" or "lost 17 of 40 prompts"
   describes the harness's call budget, not naive's behavior against a real
@@ -358,16 +358,16 @@ needs either a raised ceiling or a much smaller workload.
   matters, run 1's clean 82.5% vs 100% is still the failure that counts; a
   gateway that reliably finishes the job is doing its job, even slowly.
 
-- **The gateway is far slower here, and that is not a win — it's the
+- **The gateway is far slower here, and that is not a win: it's the
   tradeoff, stated plainly.** 67.2s vs 7.4s wall-clock; p50 latency 29.9s
   vs 0.7s. The gateway is deliberately pacing itself under the account's
   real 5500 tokens/min ceiling instead of bursting and eating rejections
   the way naive does. That buys completeness, not throughput. Do not read
   the wall-clock numbers in this section as evidence the gateway is faster
-  live — it is the opposite, by design, and the simulated benchmark's
+  live. It is the opposite, by design, and the simulated benchmark's
   wall-clock win above is *not* reproduced here.
 
-- **The binding limit is tokens per minute (6000), not requests** —
+- **The binding limit is tokens per minute (6000), not requests,**
   measured from real response headers, as above. That is precisely why the
   library tracks two independent buckets instead of one: a client that only
   paced requests would sail right past this account's actual ceiling. Both
@@ -381,7 +381,7 @@ needs either a raised ceiling or a much smaller workload.
   from the arm before it) to 67 requests / 34 rejections. Gateway ranged
   from 32.5s / 0 rejections to 67.2s / 15 rejections. With N=2 runs and a
   single shared account whose token bucket carries state across the whole
-  invocation (the 90s cooldown reduces but does not eliminate this — a
+  invocation (the 90s cooldown reduces but does not eliminate this;
   bucket refilling at ~100 tokens/sec does not fully recover from a
   multi-thousand-token deficit in 90s), these numbers are indicative of the
   shape of the effect, not a precise measurement of it. Treat every number
@@ -402,14 +402,14 @@ needs either a raised ceiling or a much smaller workload.
   faster. The simulated benchmark's Configuration A (200 prompts against a
   190/min *request* limit) and this live run (40 prompts against a 5500
   tpm *token* limit) are different regimes and are not comparable
-  numbers — only the reliability/failure-isolation story generalizes
+  numbers; only the reliability/failure-isolation story generalizes
   across both.
 
 - **Caveats, unchanged in kind from the earlier attempts**: one provider
   (Groq), one model (`allam-2-7b`), one account's current limits, one
   machine, one network path, one point in time (2026-09-18, ~16:13 UTC),
   free tier, **N=2**. This is not a claim about what Groq does or what the
-  gateway does against a real provider in general — it is what happened
+  gateway does against a real provider in general. It is what happened
   twice, on this account, with the ordering confound addressed.
 
 - **What we would do differently.** This attempt still produced one
@@ -417,7 +417,7 @@ needs either a raised ceiling or a much smaller workload.
   residually confounded arm (run 2's gateway, carrying rate-limit state
   from run 1). A clean live A/B needs either separate API keys per arm (so
   no arm's account state can bleed into another's), or a cooldown inserted
-  at *every* arm boundary including between runs — not just within a run —
+  at *every* arm boundary including between runs, not just within a run,
   plus a `--max-live-calls` ceiling generous enough that no single arm can
   hit it mid-run. A ceiling that truncates an arm partway through is what
   produced this attempt's `LiveCallBudgetExceeded` artifact; size the
@@ -429,15 +429,15 @@ needs either a raised ceiling or a much smaller workload.
 Both were found by reviewing results that looked too good or too bad, and
 both changed the conclusions materially.
 
-**Attempt 1 — misconfigured ceiling.** `--live-rpm-limit`/`--live-tpm-limit`
+**Attempt 1: misconfigured ceiling.** `--live-rpm-limit`/`--live-tpm-limit`
 defaulted to 6500/5500, guessed from a general "~7000 req/min" figure
-applied to the wrong dimension (requests instead of tokens) — a ceiling
+applied to the wrong dimension (requests instead of tokens), a ceiling
 roughly 200x too permissive relative to the real 6000 tpm limit, because it
 was read off the wrong header. Against 50 prompts at 10-way concurrency,
 naive alone racked up 254 real 429s across 3 runs (46/150 prompts
-succeeded, 30.7%), and gateway — whose token bucket ceiling was not
+succeeded, 30.7%), and gateway, whose token bucket ceiling was not
 actually under the account's real 6000 tpm limit, so it provided close to
-no pacing — sent 100 requests and got 100 real 429s back (0/150 succeeded,
+no pacing, sent 100 requests and got 100 real 429s back (0/150 succeeded,
 0%):
 
 ```
@@ -463,16 +463,16 @@ max_tokens:       16
 The fix (correct token-bucket ceiling, derived from measured headers
 instead of a guess) was applied to `bench.py`'s defaults.
 
-**Attempt 2 — correct ceiling, confounded ordering.** With the ceiling
+**Attempt 2: correct ceiling, confounded ordering.** With the ceiling
 fixed, `run_naive` ran immediately before `run_gateway` inside the same
 invocation, against the same account, with no cooldown between them. Naive
-pushed roughly 840 tokens/sec through in the first ~8 seconds — about 8x
-the account's ~100 tokens/sec sustained ceiling — leaving the account in a
+pushed roughly 840 tokens/sec through in the first ~8 seconds, about 8x
+the account's ~100 tokens/sec sustained ceiling, leaving the account in a
 multi-thousand-token deficit that takes on the order of a minute to work
 off, independent of who asks next. Gateway, correctly configured at/under
 the real 6000 tpm limit, was still asking an account with no real remaining
 capacity left over from naive's overshoot moments earlier, and received 25
-real 429s on 57 requests (44%), taking 68.3s — worse than naive on both
+real 429s on 57 requests (44%), taking 68.3s, worse than naive on both
 counts, which is the opposite of the hypothesis:
 
 ```
@@ -498,13 +498,13 @@ max_tokens:       16
 This run stopped at N=1, deliberately, per this task's own rule against
 continuing to burn live quota on a comparison already known to be
 confounded. The per-request latencies pointed at the mechanism: gateway's
-successful calls landed in tight clusters (~17.4s, ~32.7s, ~68.3s) — batches
+successful calls landed in tight clusters (~17.4s, ~32.7s, ~68.3s): batches
 released together after waiting for real token-bucket capacity that naive
 had just spent, not independently-paced calls. That diagnosis is what led
 directly to `--arm-cooldown` and `--arm-order alternate`, both used in the
 corrected run above.
 
-Neither attempt found a defect in `src/llm_gateway/` itself — in both,
+Neither attempt found a defect in `src/llm_gateway/` itself. In both,
 every 429 the account actually returned was correctly reported as
 `ProviderError(status=429)` and correctly retried. Both were benchmark
 methodology problems: attempt 1 picked the wrong ceiling; attempt 2 picked
@@ -530,13 +530,13 @@ Read this before trusting any number above.
   does not capture.
 - **The naive baseline is one particular implementation.** It uses a
   bounded semaphore plus `RetryPolicy`'s backoff. A different naive
-  implementation — a lower concurrency cap, a smarter (but still
-  rate-limit-unaware) circuit breaker, client-side request coalescing,
-  adaptive concurrency — could look meaningfully better or worse than what
+  implementation (a lower concurrency cap, a smarter but still
+  rate-limit-unaware circuit breaker, client-side request coalescing,
+  adaptive concurrency) could look meaningfully better or worse than what
   is measured here. This is not "the" naive baseline, just an honest one.
 - **Results depend entirely on the configured limits.** The specific gap
   shown above (85 vs 0 429s, a long gateway p95 tail) is a direct
-  consequence of `--server-rpm 190` against `--n-prompts 200` — a workload
+  consequence of `--server-rpm 190` against `--n-prompts 200`, a workload
   chosen to sit close to the server's burst allowance so both the
   "gateway avoids 429s" and "gateway pays a queueing-latency tax when
   genuinely over capacity" behaviors show up in one run. Move `--server-rpm`
@@ -544,7 +544,7 @@ Read this before trusting any number above.
   measure); move it well below and *both* arms take proportionally longer
   because the workload's true minimum completion time grows to
   `(N - burst_capacity) / (rpm / 60)` seconds regardless of client
-  implementation — no library can make a server accept more traffic than
+  implementation: no library can make a server accept more traffic than
   its own configured limit permits. Different limits, meaningfully
   different story.
 - **The naive and gateway arms do not literally share one server
@@ -553,7 +553,7 @@ Read this before trusting any number above.
   *draw sequence available* to each arm is equivalent. But because the two
   arms issue calls in different order and at different concurrency (batched
   vs unbatched, paced vs unpaced), they do not consume that identical
-  sequence in the same order — so a given prompt is not guaranteed to see
+  sequence in the same order, so a given prompt is not guaranteed to see
   the exact same simulated latency/failure in both arms, only a
   statistically equivalent source of them. This is the standard tradeoff
   for comparing two systems with different concurrency structure; a
@@ -565,7 +565,7 @@ Read this before trusting any number above.
   it exactly one provider (matching naive's single endpoint, for a fair
   1:1 comparison). The circuit breaker and failover-to-a-second-provider
   path exist in the library and are exercised by the test suite, but this
-  benchmark says nothing about their effect — that would need a
+  benchmark says nothing about their effect; that would need a
   multi-provider run, which is a different (and separately useful)
   benchmark.
 - **A mock cannot reproduce real-world queueing or regional effects.**
@@ -576,7 +576,7 @@ Read this before trusting any number above.
 - **"Reproducible" means the deterministic counts, not wall-clock.** With
   a fixed `--seed`, the *count*-based metrics (requests sent, 429s, 5xxs,
   successes, failures, cost) are bit-for-bit identical across repeated
-  invocations — `tests/test_benchmark.py` asserts this directly. Wall-clock
+  invocations: `tests/test_benchmark.py` asserts this directly. Wall-clock
   time and per-call latency are not: they depend on real OS scheduling,
   asyncio event-loop timing, and machine load, and will vary run to run
   and machine to machine even with the same seed. Report wall-clock as a
@@ -591,14 +591,14 @@ Read this before trusting any number above.
 - **requests sent**: count of actual calls made to the simulated server
   (one per `complete()`/`complete_batch()` invocation, including retries
   and failed attempts), *not* count of prompts. A batch call counts once
-  regardless of how many prompts it carries — this is why gateway's number
+  regardless of how many prompts it carries, which is why gateway's number
   is so much smaller than naive's: both fewer retries *and* batching
   reduce it.
 - **429s / 5xx received**: count of *call-level* rejection events (one per
   rejected call, so one rejected batch call counts once even though it
   fails every prompt in that batch).
 - **latency p50/p95/p99**: end-to-end, per prompt, from submission to
-  final success — includes queueing, retries, and (for gateway) time spent
+  final success. Includes queueing, retries, and (for gateway) time spent
   waiting in the batcher and the rate limiter. Computed only over prompts
   that succeeded.
 - **success rate**: successes / total prompts submitted, per run.
@@ -606,5 +606,5 @@ Read this before trusting any number above.
   * cost_per_1k_output`, summed over successful prompts, using the mock's
   token accounting (`~len(prompt)//4` input tokens, `min(max_tokens, 32)`
   output tokens) and the `--cost-per-1k-*` prices (defaults: $0.02 in /
-  $0.04 out per 1k tokens — placeholder numbers, not any real provider's
+  $0.04 out per 1k tokens; placeholder numbers, not any real provider's
   pricing).

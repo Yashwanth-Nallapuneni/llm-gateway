@@ -14,3 +14,5 @@ HANDOFF.md
 .env
 *.key
 .groq_key
+docs/RESUME.md
+docs/BLOG_DRAFT.md

@@ -2,7 +2,7 @@
 
 This is a click-by-click guide for publishing this package for the first
 time. It assumes you have never published a Python package before. Read the
-whole thing once before doing anything — the real release step
+whole thing once before doing anything: the real release step
 (`git push origin v0.1.0`) is irreversible.
 
 ## 1. What PyPI and TestPyPI are
@@ -25,7 +25,7 @@ the real index.
 `.github/workflows/release.yml` publishes using PyPI's **Trusted
 Publishing**: GitHub Actions proves its identity to PyPI directly via OIDC
 (an ephemeral, cryptographically signed token GitHub issues to the workflow
-run). Nothing is copied, generated, or stored — **you never create a PyPI
+run). Nothing is copied, generated, or stored. **You never create a PyPI
 API token, and no secret is ever added to this repository.** You only tell
 PyPI, once, "trust workflow `release.yml` in this specific GitHub repo."
 
@@ -58,19 +58,19 @@ publisher."
    | Environment name | `pypi` |
 
    The environment name must match what `release.yml` actually declares for
-   the `publish-pypi` job (currently `pypi` — check the `environment: name:`
+   the `publish-pypi` job (currently `pypi`; check the `environment: name:`
    line in the workflow if this doc and the file ever disagree; the workflow
    is the source of truth).
 
 4. Click "Add". You'll see it listed under "Pending publishers."
 
 **Warning: this does *not* reserve the name `aiollm-gateway`.** A pending
-publisher is only a promise — "when a project by this name gets published by
+publisher is only a promise: "when a project by this name gets published by
 this exact repo/workflow, trust it automatically." Anyone else can still
 register the plain name `aiollm-gateway` on PyPI in the meantime, and if
 they do, your pending publisher becomes useless and you'd need to pick a
-different name. **Publish promptly after adding the pending publisher** —
-don't leave a long gap between this step and step 7 (the real release).
+different name. **Publish promptly after adding the pending publisher.**
+Don't leave a long gap between this step and step 7 (the real release).
 
 ## 5. Repeat on TestPyPI (optional but recommended)
 
@@ -94,7 +94,7 @@ a named "environment" that matches what you typed into PyPI.
 1. On GitHub, go to this repo → **Settings → Environments**.
 2. Click **New environment**, name it exactly `pypi`, click **Configure
    environment** (no protection rules are required, though you can add
-   "required reviewers" here later for extra safety — it just means a human
+   "required reviewers" here later for extra safety; it just means a human
    has to click approve before the real publish job runs).
 3. Repeat for an environment named exactly `testpypi`.
 
@@ -122,7 +122,7 @@ a named "environment" that matches what you typed into PyPI.
    **Caveat:** this package has no required runtime dependencies, so a plain
    install should work fine. But if you ever add a dependency, note that
    TestPyPI only knows about *other* packages that have also been uploaded
-   to TestPyPI — it can fail to resolve a dependency that exists on the real
+   to TestPyPI. It can fail to resolve a dependency that exists on the real
    PyPI but was never pushed to TestPyPI. That's a TestPyPI quirk, not a
    sign anything is wrong with this package.
 
@@ -144,15 +144,15 @@ Once it succeeds, the project page is live at
 https://pypi.org/project/aiollm-gateway/ and `pip install aiollm-gateway`
 works for everyone.
 
-## 9. Publishing is irreversible — read this before you tag
+## 9. Publishing is irreversible: read this before you tag
 
 - **A version number can never be reused.** Once `0.1.0` is uploaded to
-  PyPI, you can never upload a different `0.1.0` again — even if you delete
+  PyPI, you can never upload a different `0.1.0` again, even if you delete
   it. Your next release, bug fix or not, must bump the version (`0.1.1`,
   `0.2.0`, ...) in `pyproject.toml` before tagging.
 - **A deleted project name cannot be re-registered by you or anyone else.**
   If you ever delete the entire `aiollm-gateway` project from PyPI, that
-  name is gone for good — PyPI does not let it be re-claimed, by you or
+  name is gone for good. PyPI does not let it be re-claimed, by you or
   anyone else, to prevent supply-chain attacks where someone re-registers a
   formerly-trusted name.
 - Because of both of the above, **do not delete releases or projects to fix

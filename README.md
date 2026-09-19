@@ -20,12 +20,12 @@ server, no caching or prompt management.
 pip install aiollm-gateway
 ```
 
-![Terminal recording of examples/failover_demo.py: the router sends traffic to the cheap primary provider, the primary starts failing and the circuit breaker moves traffic to backup, then the primary recovers and traffic moves back — ending with the batching/latency/cost metrics report](docs/failover-demo.svg)
-<sub>`examples/failover_demo.py`, real captured output — primary fails, the breaker trips traffic to backup, then recovers.</sub>
+![Terminal recording of examples/failover_demo.py: the router sends traffic to the cheap primary provider, the primary starts failing and the circuit breaker moves traffic to backup, then the primary recovers and traffic moves back, ending with the batching/latency/cost metrics report](docs/failover-demo.svg)
+<sub>`examples/failover_demo.py`, real captured output: primary fails, the breaker trips traffic to backup, then recovers.</sub>
 
 ## Quickstart
 
-This runs as-is — no API key, no network. `MockProvider` ships with the library
+This runs as-is, with no API key and no network. `MockProvider` ships with the library
 precisely so you can see the machinery work before wiring up a real provider.
 
 ```python
@@ -114,7 +114,7 @@ median of 5 runs ([full method and caveats](benchmarks/README.md)):
 
 The win is avoided rate-limit rejections and the wasted work behind them. The
 cost is tail latency: batching waits, and throttled requests queue instead of
-failing fast. **Below the provider's limit this library buys you nothing** —
+failing fast. **Below the provider's limit this library buys you nothing:**
 the same benchmark at 150 prompts is a dead heat. If you are not near a rate
 limit, do not add it.
 
@@ -125,16 +125,16 @@ are implemented and unit-tested against a fake HTTP server. The Groq adapter
 has now run against the real Groq API three times (`benchmarks/bench.py
 --provider groq`; see
 [benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
-all three runs in full) — real HTTP calls, real 429/`Retry-After` handling,
+all three runs in full): real HTTP calls, real 429/`Retry-After` handling,
 real token usage, no simulation involved, every time. The first two attempts
-were methodology failures, kept on record rather than deleted: attempt 1 had
+were methodology failures, kept on record rather than deleted. Attempt 1 had
 the gateway arm's rate-limit ceiling set from a misread header (~200x too
 permissive on the dimension that actually binds), so both arms got hit hard
-by real 429s and the comparison tested nothing; attempt 2 fixed the ceiling
+by real 429s and the comparison tested nothing. Attempt 2 fixed the ceiling
 but ran both arms back-to-back with no cooldown, so the naive arm's burst
 drained the shared account's token bucket and the gateway arm absorbed
 leftover 429s that weren't its own doing. Neither attempt found a defect in
-the library itself — every 429 was correctly detected and retried both
+the library itself: every 429 was correctly detected and retried both
 times.
 
 A third, corrected attempt (a 90s cooldown between arms, arm order
@@ -142,7 +142,7 @@ alternated across runs, 2 runs of 40 prompts each, 185 live calls, $0 on
 the free tier) fixed both problems. The clean, uncontaminated result is
 run 1: naive succeeded on 33/40 prompts (**82.5%**, 7 genuine failures
 after 34 real 429s), while the gateway succeeded on 40/40 (**100%, 0
-rejections**) — at a real, disclosed cost of 32.5s vs 7.4s wall-clock,
+rejections**), at a real, disclosed cost of 32.5s vs 7.4s wall-clock,
 because it paces itself under the account's real ~5500 tokens/min ceiling
 instead of bursting and eating rejections the way the naive loop does;
 this live run does **not** reproduce the simulated benchmark's wall-clock
@@ -150,12 +150,12 @@ advantage. Run 2's naive arm is **not** a second data point for this
 comparison: it stopped after 23 of an expected ~40+ requests because this
 task's `--max-live-calls 185` budget ran out mid-arm, and its 17 recorded
 "failures" are the harness refusing further calls
-(`LiveCallBudgetExceeded`), not real rate-limit rejections — that arm
+(`LiveCallBudgetExceeded`), not real rate-limit rejections. That arm
 never got to attempt 17 of its prompts. An earlier version of this section
 quoted that 57.5%-success figure as a real result; it wasn't, and the
 mistake has been corrected here. Run 2's gateway arm did complete cleanly
 but took 15 real 429s (still reaching 100% success via retry) because the
-account's rate-limit state carried over from run 1 — the 90s cooldown
+account's rate-limit state carried over from run 1: the 90s cooldown
 only applies *between arms within a run*, not between one run's last arm
 and the next run's first arm, a genuine remaining limitation of this
 harness. Read
@@ -267,7 +267,7 @@ no network calls anywhere in this repository.
 
 ## Measured output
 
-`python examples/bulk_eval.py` — 500 prompts, two mock providers, one cheap and
+`python examples/bulk_eval.py` runs 500 prompts across two mock providers, one cheap and
 rate-limited, one expensive with headroom. Ten percent of the workload requires
 logprobs, which only the expensive provider supports.
 
@@ -294,7 +294,7 @@ logprob-requiring requests routed correctly: 50/50
 ```
 
 The batch-size histogram is the thing to look at: 500 requests left as roughly
-50 dispatches. The split between providers is the router at work — the cheap
+50 dispatches. The split between providers is the router at work: the cheap
 provider takes the bulk until its bucket drains, at which point headroom beats
 cost and traffic shifts rather than blocks.
 
@@ -312,21 +312,6 @@ phase 3: primary recovers, breaker half-opens and closes
   {'primary': 20}
   primary breaker: closed
 ```
-
-## This repo is a teaching artifact
-
-The four core modules are annotated to be read, not just run. Every non-obvious
-decision carries a `WHY:` / `ALT:` / `TRAP:` / `ASK:` tag, and each has a
-companion `EXPLAIN.md` written to be read *before* the code.
-
-`scripts/strip.py` blanks the bodies of exactly four functions —
-`TokenBucket.acquire`, `TokenBucket.try_acquire`, `RetryPolicy.delay_for`,
-`Batcher.collect`, `ProviderRouter.select` — leaving signatures, docstrings and
-all tests untouched, after copying the originals to `.reference/`. Rebuild them
-against the failing suite, then diff.
-
-See **[LEARNING_PATH.md](LEARNING_PATH.md)** for the reading order, the rebuild
-loop, and the full list of self-check questions.
 
 ## Scope
 
