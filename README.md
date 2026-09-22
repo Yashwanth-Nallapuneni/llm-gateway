@@ -1,5 +1,9 @@
 # llm-gateway
 
+[![PyPI](https://img.shields.io/pypi/v/aiollm-gateway)](https://pypi.org/project/aiollm-gateway/)
+[![Python](https://img.shields.io/pypi/pyversions/aiollm-gateway)](https://pypi.org/project/aiollm-gateway/)
+[![CI](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml)
+
 **Send 500 prompts to an LLM API without writing a single `sleep()`.**
 
 An async Python layer that sits between your code and a provider's API. It

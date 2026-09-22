@@ -8,9 +8,9 @@ so re-check anything marked (verify) before relying on it.
 `llm_gateway` is a zero-runtime-dependency async layer for pacing, retrying,
 batching and routing requests across LLM providers. 234 tests pass; CI runs
 pytest, ruff and mypy on Python 3.11-3.14 and builds/validates the package
-on every push and pull request. The package ships as `aiollm-gateway` with
-MIT license and full metadata; it is not yet published to PyPI (pending
-first release, via Trusted Publishing).
+on every push and pull request. The package is published on PyPI as
+[`aiollm-gateway`](https://pypi.org/project/aiollm-gateway/) (v0.1.0,
+released via Trusted Publishing from a tagged GitHub Actions run).
 
 Providers: `MockProvider` (in-process, no network), `GroqProvider` and
 `OpenRouterProvider` (real HTTP adapters with error mapping and
@@ -37,10 +37,6 @@ latency p99.
 
 - **OpenRouter has never been exercised against the live API.** All
   OpenRouter coverage today is unit tests against a fake HTTP server.
-- **Not published to PyPI.** The package is named, licensed and built
-  (`python -m build` + `twine check` run in CI); the release step itself
-  (TestPyPI, then a tagged `v0.1.0` via Trusted Publishing) has not run.
-  Pending first release.
 - **Clean live A/B methodology.** The one clean live comparison (Groq, run
   1) is uncontaminated, but a documented residual confound remains: a
   90-second cooldown is applied only *between arms within a run*, not
