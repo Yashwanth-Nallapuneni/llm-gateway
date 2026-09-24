@@ -332,6 +332,13 @@ class LLMGateway:
                     if reservation is not None:
                         reservation.release()
                 self._fail_batch(remaining, last_exc)
+        except asyncio.CancelledError:
+            # aclose() cancels workers mid-dispatch; this batch is no longer in
+            # the queue, so fail it here or its callers would wait forever.
+            self._fail_batch(
+                batch, GatewayError("gateway closed while request was in flight")
+            )
+            raise
         except Exception as exc:
             # An unexpected bug anywhere above (not one of the already-handled
             # provider/budget/routing failure paths) would otherwise propagate
