@@ -45,9 +45,13 @@ async def test_budget_reservation_released_after_timeout():
 
     # The dispatch that outlived the caller's wait keeps running in the
     # background; give it a moment to settle the reservation it holds.
+    # Poll instead of one fixed sleep so a slow CI machine does not flake.
     import asyncio
 
-    await asyncio.sleep(0.4)
+    for _ in range(100):
+        if budget.outstanding_count == 0:
+            break
+        await asyncio.sleep(0.05)
     # No reservation is left dangling: the background dispatch settled (or
     # released) it even though the caller stopped waiting.
     assert budget.outstanding_count == 0

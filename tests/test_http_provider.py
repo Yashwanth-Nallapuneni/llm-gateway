@@ -545,6 +545,34 @@ async def test_openrouter_402_out_of_credit_is_not_retryable():
     await client.aclose()
 
 
+async def test_openrouter_402_notifies_headers_exactly_once():
+    """Regression test: OpenRouterClient._raise_for_status used to call
+    _notify_headers a second time for a 402, on top of the call complete()
+    already makes for every response -- double-invoking on_headers (and
+    therefore the limiter's sync_from_headers) for the same response."""
+    calls: list[Mapping[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            402,
+            json={"error": {"message": "insufficient credits"}},
+            headers={"x-ratelimit-remaining-requests": "5"},
+        )
+
+    http_client = make_client(handler)
+    client = OpenRouterClient(
+        base_url=OPENROUTER_BASE_URL,
+        api_key="k",
+        model="some/model",
+        client=http_client,
+        on_headers=lambda h: calls.append(dict(h)),
+    )
+    with pytest.raises(ProviderError):
+        await client.complete(LLMRequest(prompt="hi"))
+    assert len(calls) == 1
+    await client.aclose()
+
+
 def test_openrouter_provider_capabilities():
     http_client = make_client(lambda r: httpx.Response(200))
     client = OpenRouterClient(base_url=OPENROUTER_BASE_URL, api_key="k", model="m", client=http_client)

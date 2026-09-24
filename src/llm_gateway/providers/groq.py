@@ -33,15 +33,10 @@ class GroqClient(OpenAICompatibleClient):
     completion's token budget on an internal `reasoning` field before they
     ever emit `content`. At a small `max_tokens` the entire budget can go to
     reasoning, and the API still returns a normal 200 response -- just with
-    `content: ""` and `finish_reason: "length"`. `LLMResponse` (types.py)
-    has no `finish_reason` field, so that distinction does not survive the
-    trip through `OpenAICompatibleClient`'s response parsing (http.py): a
-    reasoning model that burned its whole budget thinking and a model that
-    legitimately produced nothing both surface identically as
-    `response.text == ""`. Fixing that properly means threading
-    `finish_reason` through http.py and types.py, which is out of scope
-    here. If you get mysteriously empty completions from a Groq model,
-    raise `max_tokens` and check whether the model is a reasoning model
+    `content: ""` and `finish_reason: "length"`. `LLMResponse` carries
+    `finish_reason` and `was_truncated`, so check those rather than treating
+    empty text alone as a failure. If you get empty completions from a Groq
+    model, raise `max_tokens` and check whether it is a reasoning model
     before assuming the library itself is broken.
     """
 

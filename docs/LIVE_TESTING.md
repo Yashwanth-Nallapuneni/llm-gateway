@@ -179,3 +179,118 @@ behavior after the first call.
   `python3 -m llm_gateway.cli run ... --provider groq --yes --max-tokens 16`
   as a subprocess over a two-prompt file and checks the JSONL output parses
   and contains real text.
+
+# Live testing against the real OpenRouter API
+
+`tests/test_live_openrouter.py` mirrors `test_live_groq.py`: it makes real
+calls to OpenRouter, only under `pytest -m live`, only with
+`OPENROUTER_API_KEY` set, and every test carries its own `skipif` so the
+file is a no-op for anyone without a key.
+
+## Get a key
+
+1. Sign up at https://openrouter.ai and create a key under Settings > Keys.
+2. Save it locally, the same way as the Groq key:
+
+   ```bash
+   echo 'sk-or-...' > ~/.openrouter_key
+   chmod 600 ~/.openrouter_key
+   ```
+
+   Never commit this file or paste the key into a command that gets logged
+   -- read it from `~/.openrouter_key` instead.
+
+## Run the live tests
+
+```bash
+OPENROUTER_API_KEY=$(cat ~/.openrouter_key) python3 -m pytest tests/test_live_openrouter.py -m live -q
+```
+
+## Model choice and cost (verified 2026-09-24)
+
+`LIVE_MODEL` is `meta-llama/llama-3.1-8b-instruct`, a cheap paid model
+(observed pricing: $0.05 / M input tokens, $0.08 / M output tokens), not one
+of OpenRouter's free (`:free`-suffixed) models. That was a deliberate choice
+after checking the free models actually available that day: almost all of
+them (`liquid/lfm-2.5-2.6b:free`, `nvidia/nemotron-3.5-lightning:free`,
+`cohere/north-mini-code:free`, `qwen/qwen3.8-27b:free`, and others) are
+reasoning models that spend a 16-token budget on an internal `reasoning`
+field and come back with `content: null`, and a couple
+(`google/gemma-4-26b-a4b-it:free`, `poolside/laguna-xs-2.1:free`) returned a
+real HTTP 429 from their shared free-tier pool on an ordinary request.
+`meta-llama/llama-3.1-8b-instruct` is a conventional, non-reasoning model
+that supports logprobs and returns clean content immediately at
+`max_tokens=16`; its cost for one 16-token completion was observed at
+$0.00000046. The whole exploration plus the live test file together moved
+account usage from $0.388871 to $0.393383 -- about $0.0045 total, well
+inside the $1.00 budget for this work.
+
+`LIVE_REASONING_FREE_MODEL` is `liquid/lfm-2.5-2.6b:free`, used
+specifically to exercise the empty-content/`was_truncated` path against a
+real reasoning model, the same trap documented in
+`src/llm_gateway/providers/groq.py`'s `GroqClient` docstring for Groq's
+`openai/gpt-oss-*` models. Observed live: `content: null`,
+`finish_reason: "length"` at `max_tokens=16`.
+
+## Headers observed
+
+Verified live 2026-09-24: OpenRouter's `/chat/completions` responses do
+**not** include any `x-ratelimit-*` headers -- only `x-generation-id`,
+standard CORS/transport headers, and Cloudflare's own headers. This is a
+real difference from Groq, which sends
+`x-ratelimit-{limit,remaining,reset}-{requests,tokens}` on every response.
+`sync_from_headers` (rate_limit.py) already handles this correctly: it
+looks for specific header names and is a no-op when they're absent, so an
+OpenRouter provider's local `rpm_limit`/`tpm_limit` configuration keeps
+governing pacing for the life of the process, never getting corrected by
+the server the way a Groq provider's does.
+`test_rate_limit_headers_sync_is_a_safe_no_op` in `test_live_openrouter.py`
+guards this: it asserts the bucket's *capacity* is untouched by a real call
+(only its current level drops from normal consumption), which is what would
+break if a future change to `sync_from_headers` assumed every
+OpenAI-compatible provider sends these headers.
+
+## What each live test checks
+
+- **A real completion end to end** -- through `LLMGateway`, non-empty text,
+  positive token counts, `provider == "openrouter"`, and that
+  `was_truncated` agrees with `finish_reason`.
+- **Rate-limit header sync is a safe no-op** -- see "Headers observed"
+  above.
+- **A bad model id is a 400, and is not retried** -- OpenRouter reports an
+  unrecognized model id as HTTP 400 (`"... is not a valid model ID"`),
+  unlike Groq's 401 for a bad key; both are correctly non-retryable.
+- **A bad key is a 401, and is not retried** -- a deliberately invalid
+  literal key, never a mangled version of the real one.
+- **Logprobs round-trip on a supporting model** -- `needs_logprobs=True`
+  against `meta-llama/llama-3.1-8b-instruct` returns real per-token logprob
+  values; `require_parameters` (forced on automatically by
+  `OpenRouterClient.extra_body_params` whenever a request needs logprobs or
+  strict JSON -- see `src/llm_gateway/providers/openrouter.py`) does not
+  itself break an ordinary supporting model.
+- **`require_parameters` rejects a model without logprobs support** --
+  `amazon/nova-micro-v1` (verified live to not list `logprobs` in its
+  `supported_parameters`) with `needs_logprobs=True` comes back as a
+  routing failure (`"No endpoints found that can handle the requested
+  parameters"`, HTTP 404) rather than a silent 200 missing the logprobs
+  field. This is the whole point of `require_parameters` -- see the module
+  docstring in `openrouter.py`.
+- **A free reasoning model can return empty content** -- see "Model choice
+  and cost" above; proves `was_truncated`/`finish_reason` survive a real
+  OpenRouter response the same way they do for Groq's reasoning models.
+- **The CLI against the real provider** -- runs
+  `python3 -m llm_gateway.cli run ... --provider openrouter --yes
+  --max-tokens 16 --budget 0.05` as a subprocess over a two-prompt file and
+  checks the JSONL output parses and contains real text.
+
+## Defect found and fixed during this investigation
+
+`OpenRouterClient._raise_for_status` (in `src/llm_gateway/providers/openrouter.py`)
+used to call `self._notify_headers(response)` a second time when mapping a
+402 (out of credit) response, on top of the call `OpenAICompatibleClient.complete`
+already makes for every response before `_raise_for_status` runs. That
+double-invoked `on_headers` -- and therefore the limiter's
+`sync_from_headers` -- twice for the same response. The extra call has been
+removed; `tests/test_http_provider.py::test_openrouter_402_notifies_headers_exactly_once`
+is a regression test for it (offline, via `httpx.MockTransport`, since
+provoking a real 402 live would mean deliberately draining account credit).

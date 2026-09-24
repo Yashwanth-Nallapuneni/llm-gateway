@@ -47,9 +47,13 @@ class OpenRouterClient(OpenAICompatibleClient):
         # it lands in NON_RETRYABLE_STATUSES via RetryPolicy's `status >= 500`
         # fallback being False for 402, so it is already not retried, but we
         # still want to surface the specific "add credit" message.
+        #
+        # No _notify_headers call here: `complete()` in http.py already calls
+        # it once for every response, success or error, before reaching
+        # `_raise_for_status`. Calling it again here would invoke on_headers
+        # (and the limiter's sync_from_headers) twice for the same response.
         if response.status_code == 402:
             message = self._error_message(response)
-            self._notify_headers(response)
             raise ProviderError(
                 f"OpenRouter: out of credit (402): {message}",
                 status=402,
