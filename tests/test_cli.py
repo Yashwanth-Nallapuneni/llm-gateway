@@ -303,3 +303,93 @@ def test_missing_prompt_field_is_reported_clearly(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "prompt" in captured.err
     assert "Traceback" not in captured.err
+
+
+# --------------------------------------------------------------------------
+# multiple providers (--provider a,b)
+# --------------------------------------------------------------------------
+
+
+def test_multi_provider_failover(tmp_path, monkeypatch):
+    """Two mock providers, the first always failing: every prompt still
+    succeeds (via the second) and the output row names the provider that
+    actually served it."""
+    from llm_gateway import cli as cli_module
+    from llm_gateway.providers.mock import MockClient
+
+    real_mock_provider = cli_module.MockProvider
+    calls = {"n": 0}
+
+    def fake_mock_provider(name="mock", **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            client = MockClient(name="primary", fail_status=503)
+            return real_mock_provider(name="primary", client=client, failure_threshold=1000)
+        client = MockClient(name="backup")
+        return real_mock_provider(name="backup", client=client)
+
+    monkeypatch.setattr(cli_module, "MockProvider", fake_mock_provider)
+
+    input_path = _write(
+        tmp_path,
+        "prompts.jsonl",
+        "\n".join(json.dumps({"prompt": f"item {i}"}) for i in range(6)),
+    )
+    output_path = tmp_path / "out.jsonl"
+
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--provider",
+            "mock,mock",
+            "--output",
+            str(output_path),
+            "--no-metrics",
+        ]
+    )
+
+    assert code == 0
+    rows = _lines(output_path.read_text())
+    assert len(rows) == 6
+    assert all("text" in r for r in rows)
+    assert all(r["provider"] == "backup" for r in rows)
+
+
+def test_api_key_rejected_with_multiple_providers(tmp_path, capsys):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}))
+
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--provider",
+            "mock,mock",
+            "--api-key",
+            "some-key",
+        ]
+    )
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "--api-key" in captured.err
+    assert "single" in captured.err
+
+
+def test_single_provider_still_works_unchanged(tmp_path):
+    """--provider mock (no comma) behaves exactly as before."""
+    input_path = _write(
+        tmp_path,
+        "prompts.jsonl",
+        "\n".join(json.dumps({"prompt": f"item {i}"}) for i in range(3)),
+    )
+    output_path = tmp_path / "out.jsonl"
+
+    code = main(
+        ["run", str(input_path), "--provider", "mock", "--output", str(output_path), "--no-metrics"]
+    )
+
+    assert code == 0
+    rows = _lines(output_path.read_text())
+    assert len(rows) == 3
+    assert all(r["provider"] == "mock" for r in rows)

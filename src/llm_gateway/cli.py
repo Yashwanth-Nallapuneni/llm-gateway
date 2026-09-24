@@ -161,22 +161,50 @@ def _no_none(**kwargs: Any) -> dict[str, Any]:
     return {k: v for k, v in kwargs.items() if v is not None}
 
 
-def build_provider(args: argparse.Namespace) -> Provider:
+def _parse_model_map(model_arg: str | None, provider_names: list[str]) -> dict[str, str]:
+    """`--model` is either a plain value (single provider only) or, for
+    multiple providers, `name=value` pairs separated by commas, e.g.
+    `groq=allam-2-7b,openrouter=x/y`. Returns {provider_name: model}."""
+    if model_arg is None:
+        return {}
+    if len(provider_names) == 1:
+        return {provider_names[0]: model_arg}
+    mapping: dict[str, str] = {}
+    for part in model_arg.split(","):
+        if "=" not in part:
+            raise CliError(
+                f"--model {model_arg!r}: with multiple providers, use "
+                "name=value pairs, e.g. --model groq=allam-2-7b,openrouter=x/y"
+            )
+        name, _, value = part.partition("=")
+        name = name.strip()
+        if name not in provider_names:
+            raise CliError(f"--model names {args_provider_hint(provider_names)}, got {name!r}")
+        mapping[name] = value.strip()
+    return mapping
+
+
+def args_provider_hint(provider_names: list[str]) -> str:
+    return "one of " + ", ".join(provider_names)
+
+
+def build_provider(name: str, args: argparse.Namespace, model: str | None) -> Provider:
+    """Build a single provider by name, using that provider's own API key
+    env var and (optionally) its own model from --model."""
     common = _no_none(
         rpm_limit=args.rpm,
         tpm_limit=args.tpm,
         max_concurrency=args.max_concurrency,
     )
 
-    if args.provider == "mock":
+    if name == "mock":
         return MockProvider(name="mock", **common)
 
-    env_var = _ENV_VAR_FOR_PROVIDER[args.provider]
+    env_var = _ENV_VAR_FOR_PROVIDER[name]
     api_key = args.api_key or os.environ.get(env_var)
     if not api_key:
         raise CliError(
-            f"no API key for provider {args.provider!r}: "
-            f"set {env_var} or pass --api-key"
+            f"no API key for provider {name!r}: set {env_var} or pass --api-key"
         )
 
     try:
@@ -187,22 +215,43 @@ def build_provider(args: argparse.Namespace) -> Provider:
             "pip install aiollm-gateway[http]"
         ) from exc
 
-    if args.provider == "groq":
-        built: Provider = groq_provider(
-            api_key,
-            **_no_none(model=args.model, **common),
-        )
+    if name == "groq":
+        built: Provider = groq_provider(api_key, **_no_none(model=model, **common))
         return built
 
     # openrouter
-    if not args.model:
+    if not model:
         raise CliError("--model is required for --provider openrouter")
-    built = openrouter_provider(
-        api_key,
-        model=args.model,
-        **common,
-    )
+    built = openrouter_provider(api_key, model=model, **common)
     return built
+
+
+def build_providers(args: argparse.Namespace) -> list[Provider]:
+    """Build every provider named in --provider, in priority order.
+
+    --provider takes a comma-separated list (e.g. "groq,openrouter"); a
+    single name keeps working exactly as before. Each provider looks up its
+    own API key env var. --api-key and a single-value --model apply only
+    when a single provider is given; with multiple providers, --model must
+    use name=value pairs (see _parse_model_map) and --api-key is rejected
+    outright, since one key cannot serve two different providers' env vars.
+    """
+    names = [n.strip() for n in args.provider.split(",") if n.strip()]
+    if not names:
+        raise CliError("--provider: at least one provider name is required")
+    for n in names:
+        if n not in PROVIDER_CHOICES:
+            raise CliError(f"--provider: unknown provider {n!r}, choose from {PROVIDER_CHOICES}")
+
+    if len(names) > 1 and args.api_key:
+        raise CliError(
+            "--api-key can only be used with a single --provider; with "
+            "multiple providers each one reads its own env var "
+            f"({_ENV_VAR_FOR_PROVIDER})"
+        )
+
+    model_map = _parse_model_map(args.model, names)
+    return [build_provider(n, args, model_map.get(n)) for n in names]
 
 
 def build_request(item: PromptItem, args: argparse.Namespace) -> LLMRequest:
@@ -210,7 +259,11 @@ def build_request(item: PromptItem, args: argparse.Namespace) -> LLMRequest:
     max_tokens = item.max_tokens if item.max_tokens is not None else args.max_tokens
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
-    model = item.model or args.model
+    # args.model is a per-provider map ("groq=x,openrouter=y") when more than
+    # one --provider is given, and is not a sensible per-request override in
+    # that case -- each provider already got its own model in build_provider.
+    single_provider = "," not in args.provider
+    model = item.model or (args.model if single_provider else None)
     if model is not None:
         kwargs["model"] = model
     if item.priority is not None:
@@ -228,8 +281,12 @@ def build_request(item: PromptItem, args: argparse.Namespace) -> LLMRequest:
 
 
 def estimate(
-    items: list[PromptItem], args: argparse.Namespace, provider: Provider
-) -> tuple[int, float]:
+    items: list[PromptItem], args: argparse.Namespace, providers: list[Provider]
+) -> tuple[int, float, str]:
+    """Token/cost estimate. With more than one provider, cost is the worst
+    case: whichever listed provider is most expensive for this workload.
+    Simple and safe -- the real run may end up cheaper if a cheaper
+    provider serves most of the traffic, never more expensive than this."""
     total_tokens = 0
     input_tokens = 0
     output_tokens = 0
@@ -238,8 +295,9 @@ def estimate(
         input_tokens += req.estimated_input_tokens()
         output_tokens += req.max_tokens
         total_tokens += req.estimated_total_tokens()
-    cost = provider.estimated_cost(input_tokens, output_tokens)
-    return total_tokens, cost
+    worst_provider = max(providers, key=lambda p: p.estimated_cost(input_tokens, output_tokens))
+    cost = worst_provider.estimated_cost(input_tokens, output_tokens)
+    return total_tokens, cost, worst_provider.name
 
 
 def _confirm_cost(
@@ -311,7 +369,7 @@ async def _submit_one(
 
 
 async def run_gateway(
-    provider: Provider,
+    providers: list[Provider],
     items: list[PromptItem],
     args: argparse.Namespace,
 ) -> tuple[list[dict[str, Any]], bool, str]:
@@ -338,7 +396,7 @@ async def run_gateway(
         )
 
     gateway = LLMGateway(
-        providers=[provider], batcher=batcher, retry=retry, store=store, budget=budget
+        providers=providers, batcher=batcher, retry=retry, store=store, budget=budget
     )
 
     # Every prompt gets a row in `rows` no matter how the run ends: a
@@ -412,9 +470,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "input",
         help="Path to a .jsonl or .txt file of prompts, or - for stdin.",
     )
-    run.add_argument("--provider", choices=PROVIDER_CHOICES, default="mock")
-    run.add_argument("--api-key", default=None, help="API key (prefer an env var).")
-    run.add_argument("--model", default=None)
+    run.add_argument(
+        "--provider",
+        default="mock",
+        help=(
+            "One provider, or a comma-separated priority list, e.g. "
+            "'groq,openrouter' (routing and failover between them come from "
+            "the library). Choices for each entry: " + ", ".join(PROVIDER_CHOICES) + "."
+        ),
+    )
+    run.add_argument(
+        "--api-key",
+        default=None,
+        help="API key (prefer an env var). Only valid with a single --provider.",
+    )
+    run.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Model name. With a single --provider, a plain value. With "
+            "multiple providers, name=value pairs separated by commas, e.g. "
+            "'groq=allam-2-7b,openrouter=x/y'."
+        ),
+    )
     run.add_argument("--max-tokens", type=int, default=None)
     run.add_argument("--batch-size", type=int, default=None, dest="batch_size")
     run.add_argument("--max-wait-ms", type=float, default=None, dest="max_wait_ms")
@@ -509,24 +587,35 @@ def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     if not items:
         raise CliError("no prompts to run: input was empty")
 
-    provider = build_provider(args)
+    providers = build_providers(args)
+    provider_names = [p.name for p in providers]
+    requested_names = [n.strip() for n in args.provider.split(",") if n.strip()]
+    any_paid = any(name != "mock" for name in requested_names)
 
     if args.dry_run:
-        total_tokens, cost = estimate(items, args, provider)
+        total_tokens, cost, worst_name = estimate(items, args, providers)
         print(f"prompts: {len(items)}", file=err)
         print(f"estimated total tokens: {total_tokens}", file=err)
-        if args.provider != "mock":
-            print(f"estimated cost: ${cost:.4f}", file=err)
+        if any_paid:
+            if len(providers) > 1:
+                print(
+                    f"estimated cost: ${cost:.4f} (worst case -- assumes every "
+                    f"prompt goes to the most expensive listed provider, {worst_name!r})",
+                    file=err,
+                )
+            else:
+                print(f"estimated cost: ${cost:.4f}", file=err)
         return 0
 
-    if args.provider != "mock":
-        _, cost = estimate(items, args, provider)
-        _confirm_cost(cost, args.provider, assume_yes=args.yes, quiet=args.quiet)
+    if any_paid:
+        _, cost, worst_name = estimate(items, args, providers)
+        _confirm_cost(cost, worst_name if len(providers) > 1 else provider_names[0],
+                      assume_yes=args.yes, quiet=args.quiet)
 
     if not args.quiet:
-        print(f"running {len(items)} prompt(s) through {args.provider}...", file=err)
+        print(f"running {len(items)} prompt(s) through {','.join(provider_names)}...", file=err)
 
-    rows, any_failed, report = asyncio.run(run_gateway(provider, items, args))
+    rows, any_failed, report = asyncio.run(run_gateway(providers, items, args))
 
     if args.output is None or args.output == "-":
         for row in rows:
