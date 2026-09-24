@@ -314,8 +314,13 @@ python examples/bulk_eval.py
 python examples/failover_demo.py
 ```
 
-Everything in the suite and both examples run against `MockProvider`. There are
-no network calls anywhere in this repository.
+The default test run and every example use `MockProvider`, so they need no
+API key and make no network calls. The live tests against Groq and
+OpenRouter are opt-in (`pytest -m live`; see
+[docs/LIVE_TESTING.md](docs/LIVE_TESTING.md)). All examples are listed in
+[examples/README.md](examples/README.md); how to contribute is in
+[CONTRIBUTING.md](CONTRIBUTING.md), and what changed in each release is in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Measured output
 
