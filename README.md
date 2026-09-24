@@ -77,7 +77,10 @@ prints to stderr unless `--no-metrics`. `--budget USD` caps total spend for the
 run: once committed spend would cross it, further prompts fail fast with a
 budget-exceeded error instead of being sent to a provider -- results already
 obtained are still written out in full, and the run exits non-zero with a
-count of how many prompts were skipped. A progress line is written to
+count of how many prompts were skipped. Each prompt holds its worst-case
+cost (priced at `--max-tokens` output tokens) until the real cost is known,
+so with a tight budget, set `--max-tokens` close to what you need or
+prompts that would have fit get refused. A progress line is written to
 stderr as the run goes, unless `--quiet`; the metrics report after the run
 is turned off separately with `--no-metrics`. See `llm-gateway run --help` for
 the full option list.
