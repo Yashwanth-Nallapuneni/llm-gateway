@@ -117,23 +117,23 @@ flowchart TD
 
 | File | Job | Lines |
 |---|---|---|
-| `gateway.py` | Wires queue, batcher, router, limiter, retry, and provider calls together; owns the dispatch loop | ~600 |
-| `queue.py` | Priority (max-heap) async queue of pending requests | ~100 |
-| `batching.py` | Groups queued requests into batches by size, tokens, or wait time | ~160 |
-| `routing.py` | Filters providers by capability and health, ranks survivors | ~155 |
+| `gateway.py` | Wires queue, batcher, router, limiter, retry, and provider calls together; owns the dispatch loop | ~580 |
+| `queue.py` | Priority (max-heap) async queue of pending requests | ~80 |
+| `batching.py` | Groups queued requests into batches by size, tokens, or wait time | ~110 |
+| `routing.py` | Filters providers by capability and health, ranks survivors | ~130 |
 | `breaker.py` | Per-provider circuit breaker state machine | ~110 |
-| `rate_limit.py` | Token-bucket rate limiting, header sync, AIMD adaptive mode | ~500 |
-| `retry.py` | Classifies failures as retryable, computes jittered backoff | ~155 |
-| `budget.py` | Reserve-then-settle spending ceiling in USD and tokens | ~325 |
-| `store.py` | SQLite-backed idempotent, resumable request/response log | ~330 |
+| `rate_limit.py` | Token-bucket rate limiting, header sync, AIMD adaptive mode | ~400 |
+| `retry.py` | Classifies failures as retryable, computes jittered backoff | ~130 |
+| `budget.py` | Reserve-then-settle spending ceiling in USD and tokens | ~300 |
+| `store.py` | SQLite-backed idempotent, resumable request/response log | ~280 |
 | `metrics.py` | In-memory counters, latency percentiles, and a text report | ~170 |
-| `types.py` | Shared dataclasses (`LLMRequest`, `LLMResponse`, ...) and exceptions | ~185 |
-| `cli.py` | `llm-gateway` command-line entry point (`run` and `models`) | ~890 |
-| `providers/base.py` | `Provider`: pairs a client with its own limiter, breaker, and concurrency cap | ~160 |
-| `providers/mock.py` | In-process fake provider used by the whole test suite | ~235 |
-| `providers/http.py` | Generic OpenAI-compatible HTTP client (needs `httpx`) | ~310 |
-| `providers/groq.py` | Groq-specific client/provider factory built on `http.py` | ~170 |
-| `providers/openrouter.py` | OpenRouter-specific client/provider factory built on `http.py` | ~160 |
+| `types.py` | Shared dataclasses (`LLMRequest`, `LLMResponse`, ...) and exceptions | ~180 |
+| `cli.py` | `llm-gateway` command-line entry point (`run` and `models`) | ~880 |
+| `providers/base.py` | `Provider`: pairs a client with its own limiter, breaker, and concurrency cap | ~140 |
+| `providers/mock.py` | In-process fake provider used by the whole test suite | ~230 |
+| `providers/http.py` | Generic OpenAI-compatible HTTP client (needs `httpx`) | ~330 |
+| `providers/groq.py` | Groq-specific client/provider factory built on `http.py` | ~140 |
+| `providers/openrouter.py` | OpenRouter-specific client/provider factory built on `http.py` | ~150 |
 
 ## Key ideas in plain words
 
