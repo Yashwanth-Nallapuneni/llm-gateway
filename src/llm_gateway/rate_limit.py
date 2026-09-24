@@ -35,6 +35,11 @@ class TokenBucket:
 
         self.capacity = float(capacity)
         self.refill_rate = float(refill_rate)
+        # The rate as configured, kept aside so adaptive mode (see
+        # throttle()/recover() below) always has a fixed floor and ceiling
+        # to measure against, even after refill_rate itself has drifted up
+        # or down.
+        self._configured_rate = self.refill_rate
 
         # monotonic() is immune to system clock adjustments -- NTP sync, DST,
         # an operator running `date -s`. It only ever moves forward.
@@ -233,6 +238,33 @@ class TokenBucket:
         # instead of being silently dropped at the call site, which would
         # look like the parsing itself was the bug.
 
+    def throttle(self) -> None:
+        """AIMD backoff: halve the refill rate after a rejection (a 429).
+
+        AIMD (additive increase / multiplicative decrease) is the same idea
+        TCP congestion control uses: back off fast when you get pushback,
+        then creep back up slowly. Cutting in half means a provider that is
+        genuinely overloaded gets a big, quick relief; a floor of 10% of
+        the configured rate stops repeated 429s from ever driving the rate
+        to (or toward) zero and stalling the provider forever.
+        """
+        # Credit the tokens earned so far at the old rate before changing it.
+        self._refill()
+        self.refill_rate = max(self.refill_rate * 0.5, self._configured_rate * 0.1)
+
+    def recover(self) -> None:
+        """AIMD recovery: nudge the refill rate back up after each success.
+
+        The increase is additive (a small fixed step, 1% of the configured
+        rate) rather than multiplicative, so recovery is deliberately much
+        slower than the backoff in throttle() -- that asymmetry is the
+        point of AIMD. Never grows past the originally configured rate.
+        """
+        self._refill()
+        self.refill_rate = min(
+            self.refill_rate + self._configured_rate * 0.01, self._configured_rate
+        )
+
     @property
     def available(self) -> float:
         """Current token count, refreshed. Used by the router for headroom."""
@@ -344,12 +376,23 @@ class ProviderLimiter:
         *,
         clock: Callable[[], float] | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        adaptive: bool = False,
     ) -> None:
         # capacity == the per-minute limit, refill == limit/60 per second.
         # That reproduces the provider's own model: a full minute's budget
         # may be spent as a burst, but the sustained rate is the limit.
         self.requests = TokenBucket(rpm_limit, rpm_limit / 60.0, clock=clock, sleep=sleep)
         self.tokens = TokenBucket(tpm_limit, tpm_limit / 60.0, clock=clock, sleep=sleep)
+        # Off by default: existing callers, and every provider that already
+        # sends rate-limit headers, get byte-for-byte the old behaviour.
+        # When on, the request bucket's rate self-adjusts (see on_throttled/
+        # on_success below) for providers that give us no headers to sync
+        # from at all. This is independent of, and simpler than,
+        # sync_from_headers: header sync corrects the token *count*
+        # directly from provider truth, while adaptive mode only ever
+        # nudges the refill *rate*, so the two never fight over the same
+        # number.
+        self.adaptive = adaptive
 
     async def acquire(self, n_requests: float = 1.0, n_tokens: float = 0.0) -> None:
         # Acquire the request bucket first, then the token bucket. Doing it
@@ -358,6 +401,16 @@ class ProviderLimiter:
         await self.requests.acquire(n_requests)
         if n_tokens > 0:
             await self.tokens.acquire(min(n_tokens, self.tokens.capacity))
+
+    def on_throttled(self) -> None:
+        """Call this when the provider returns a 429. No-op unless adaptive."""
+        if self.adaptive:
+            self.requests.throttle()
+
+    def on_success(self) -> None:
+        """Call this after a successful call. No-op unless adaptive."""
+        if self.adaptive:
+            self.requests.recover()
 
     @property
     def headroom(self) -> float:

@@ -41,10 +41,18 @@ class LLMGateway:
         clock: Callable[[], float] | None = None,
         store: RunStore | None = None,
         budget: BudgetLedger | None = None,
+        adaptive: bool = False,
     ) -> None:
         if not providers:
             raise ValueError("at least one provider is required")
         self.providers = providers
+        if adaptive:
+            # Opt-in, off by default. Flips every provider's request bucket
+            # into AIMD mode (see rate_limit.ProviderLimiter): rate halves
+            # on a 429, creeps back up on success. Meant for providers that
+            # send no rate-limit headers for sync_from_headers to use.
+            for p in providers:
+                p.limiter.adaptive = True
         self.batcher = batcher or Batcher()
         self.retry = retry or RetryPolicy()
         self.router = router or ProviderRouter()
@@ -522,15 +530,19 @@ class LLMGateway:
                     if id(result) not in seen_failures:
                         seen_failures.add(id(result))
                         provider.breaker.record_failure()
-                    self.metrics.record_failure(
-                        provider.name, getattr(result, "status", None)
-                    )
+                    status = getattr(result, "status", None)
+                    self.metrics.record_failure(provider.name, status)
+                    if status == 429:
+                        # No-op unless the provider was built with
+                        # adaptive=True; see ProviderLimiter.on_throttled.
+                        provider.limiter.on_throttled()
                     if self.retry.should_retry(result, attempt):
                         retryable.append(entry)
                     else:
                         leftover.append(entry)
                 else:
                     provider.breaker.record_success()
+                    provider.limiter.on_success()
                     response = result
                     response.attempts = attempt + 1
                     # End-to-end: from the moment the caller submitted,
