@@ -160,15 +160,15 @@ class LLMGateway:
         )
         if request.timeout_s is None:
             return await coro
+        # Run the work as its own task and only stop *waiting* on timeout.
+        # shield() keeps the task running, so the store still records the
+        # final outcome instead of leaving the row stuck "in_flight".
+        task = asyncio.ensure_future(coro)
+        # Nobody awaits the task after a timeout; read its exception so
+        # asyncio does not warn that it was never retrieved.
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
         try:
-            # wait_for cancels `coro` on timeout. If it was suspended on
-            # `await entry.future` (in _submit_uncached), that cancellation
-            # propagates to the future itself, so the dispatcher's later
-            # `if not entry.future.done()` checks skip it -- but the
-            # dispatch loop keeps running regardless of the future's state,
-            # so a reservation held for this request is still settled or
-            # released exactly as it would be without a timeout.
-            return await asyncio.wait_for(coro, request.timeout_s)
+            return await asyncio.wait_for(asyncio.shield(task), request.timeout_s)
         except TimeoutError:
             raise RequestTimeout(
                 f"request timed out after {request.timeout_s}s"

@@ -104,3 +104,34 @@ def test_cli_timeout_marks_slow_prompts_as_errors(tmp_path, monkeypatch):
     by_prompt = {row["prompt"]: row for row in rows}
     assert "text" in by_prompt["fast"]
     assert "error" in by_prompt["slow"]
+
+
+async def test_store_row_settled_after_timeout(tmp_path):
+    """A request that times out while store-backed must not leave its row
+    stuck `in_flight` forever once the background dispatch finishes."""
+    import asyncio
+
+    from llm_gateway import RunStore
+    from llm_gateway.providers.mock import MockProvider
+
+    store = RunStore(tmp_path / "run.db")
+    provider = MockProvider("a", latency=0.2)
+    gw = LLMGateway(providers=[provider], store=store)
+
+    with pytest.raises(RequestTimeout):
+        await gw.submit(LLMRequest(prompt="hi", timeout_s=0.01))
+
+    # Give the background dispatch (which keeps running after the caller's
+    # wait_for gives up) time to actually finish the provider call.
+    for _ in range(100):
+        counts = await store.counts()
+        if counts.get("in_flight", 0) == 0:
+            break
+        await asyncio.sleep(0.05)
+
+    counts = await store.counts()
+    assert counts.get("in_flight", 0) == 0, (
+        f"row stuck in_flight after timeout settled: {counts}"
+    )
+    await gw.aclose()
+    await store.aclose()
