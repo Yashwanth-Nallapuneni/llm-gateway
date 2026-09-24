@@ -324,3 +324,16 @@ double-invoked `on_headers` -- and therefore the limiter's
 removed; `tests/test_http_provider.py::test_openrouter_402_notifies_headers_exactly_once`
 is a regression test for it (offline, via `httpx.MockTransport`, since
 provoking a real 402 live would mean deliberately draining account credit).
+
+## Live multi-provider failover (2026-09-24)
+
+A manual check of CLI failover against both real APIs, three one-word
+prompts, `--max-tokens 8`:
+
+- `--provider groq,openrouter` with working models on both: Groq, the first
+  in the list, served all three.
+- The same run with `--model groq=no-such-model,...`: Groq rejected every
+  call and OpenRouter served all three, so the failover path works against
+  real providers, not only the mock.
+
+Cost: a fraction of a cent on OpenRouter; Groq is free.
