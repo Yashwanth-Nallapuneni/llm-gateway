@@ -3,7 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/aiollm-gateway)](https://pypi.org/project/aiollm-gateway/)
 [![Python](https://img.shields.io/pypi/pyversions/aiollm-gateway)](https://pypi.org/project/aiollm-gateway/)
 [![CI](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/LICENSE)
 
 **Send 500 prompts to an LLM API without writing a single `sleep()`.**
 
@@ -19,7 +19,7 @@ server, no caching or prompt management.
 pip install aiollm-gateway
 ```
 
-![Terminal recording of examples/failover_demo.py: the router sends traffic to the cheap primary provider, the primary starts failing and the circuit breaker moves traffic to backup, then the primary recovers and traffic moves back, ending with the batching/latency/cost metrics report](docs/failover-demo.svg)
+![Terminal recording of examples/failover_demo.py: the router sends traffic to the cheap primary provider, the primary starts failing and the circuit breaker moves traffic to backup, then the primary recovers and traffic moves back, ending with the batching/latency/cost metrics report](https://raw.githubusercontent.com/Yashwanth-Nallapuneni/llm-gateway/main/docs/failover-demo.svg)
 <sub>`examples/failover_demo.py`, real captured output: primary fails, the breaker trips traffic to backup, then recovers.</sub>
 
 ## Quickstart
@@ -140,7 +140,7 @@ different `--provider` but the same model reuses the stored answers.
 ## Does it actually help?
 
 Measured against a simulated server enforcing 190 requests/minute, 200 prompts,
-median of 5 runs ([full method and caveats](benchmarks/README.md)):
+median of 5 runs ([full method and caveats](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/benchmarks/README.md)):
 
 | | naive async loop | llm-gateway |
 |---|---|---|
@@ -167,7 +167,7 @@ headers, which is why the adaptive rate limiter above exists. See
 `docs/LIVE_TESTING.md` for the full breakdown and cost (about $0.0045). The
 Groq adapter has now run against the real Groq API three times
 (`benchmarks/bench.py --provider groq`; see
-[benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
+[benchmarks/README.md](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/benchmarks/README.md#live-results-real-groq-api) for
 all three runs in full): real HTTP calls, real 429/`Retry-After` handling,
 real token usage, no simulation involved, every time. The first two attempts
 were methodology failures, kept on record rather than deleted. Attempt 1 had
@@ -203,11 +203,11 @@ bursting and eating rejections the way the naive loop does, so it trades
 wall-clock time for zero dropped prompts. This does **not** reproduce the
 simulated benchmark's wall-clock win above, and it does not need to --
 the two measure different things. Read
-[benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
+[benchmarks/README.md](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/benchmarks/README.md#live-results-real-groq-api) for
 the full breakdown of all four attempts, including the two earlier
 methodology failures and the retracted figure, before citing any of these
 numbers. Broader real-endpoint coverage (more providers, more models) is
-the next milestone. See [ROADMAP.md](ROADMAP.md).
+the next milestone. See [ROADMAP.md](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/ROADMAP.md).
 
 ## The problem
 
@@ -277,7 +277,7 @@ complete worked example.
 ## Architecture
 
 For a step-by-step walk through one request and a map of every file, see
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+[docs/ARCHITECTURE.md](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/docs/ARCHITECTURE.md).
 
 ```
    caller ──submit()──▶ LLMGateway
@@ -312,10 +312,10 @@ python examples/failover_demo.py
 The default test run and every example use `MockProvider`, so they need no
 API key and make no network calls. The live tests against Groq and
 OpenRouter are opt-in (`pytest -m live`; see
-[docs/LIVE_TESTING.md](docs/LIVE_TESTING.md)). All examples are listed in
-[examples/README.md](examples/README.md); how to contribute is in
-[CONTRIBUTING.md](CONTRIBUTING.md), and what changed in each release is in
-[CHANGELOG.md](CHANGELOG.md).
+[docs/LIVE_TESTING.md](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/docs/LIVE_TESTING.md)). All examples are listed in
+[examples/README.md](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/examples/README.md); how to contribute is in
+[CONTRIBUTING.md](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/CONTRIBUTING.md), and what changed in each release is in
+[CHANGELOG.md](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/CHANGELOG.md).
 
 ## Measured output
 
