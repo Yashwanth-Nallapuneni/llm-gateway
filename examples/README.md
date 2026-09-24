@@ -11,3 +11,11 @@ All of these run offline against `MockProvider` -- no API key needed.
 - `timeouts_and_adaptive.py` -- a flaky provider returns a couple of 429s;
   `adaptive=True` halves the request rate in response, and each request
   carries a `timeout_s`. Run: `python examples/timeouts_and_adaptive.py`
+- `resume_after_crash.py` -- a sweep stops partway through with a
+  `RunStore` behind it, then runs again from the same store file: finished
+  prompts come back with no provider call, only the rest are freshly
+  called. Run: `python examples/resume_after_crash.py`
+- `budget_ceiling.py` -- more work is submitted than a small
+  `BudgetLedger` ceiling allows, so some requests succeed and the rest are
+  refused with `BudgetExceeded` before reaching the provider. Run:
+  `python examples/budget_ceiling.py`
