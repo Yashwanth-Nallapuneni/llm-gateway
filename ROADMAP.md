@@ -6,8 +6,8 @@ so re-check anything marked (verify) before relying on it.
 ## Current state
 
 `llm_gateway` is a zero-runtime-dependency async layer for pacing, retrying,
-batching and routing requests across LLM providers. 313 tests pass (plus 14
-live tests, deselected by default, that call real provider APIs); CI runs
+batching and routing requests across LLM providers. The offline test suite
+passes (live tests that call real provider APIs are deselected by default); CI runs
 pytest, ruff (check and format) and mypy on Python 3.11-3.14 and
 builds/validates the package on every push and pull request. The package is
 published on PyPI as

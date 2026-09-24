@@ -47,8 +47,9 @@ by itself: a second step parses `live-results.xml` and requires at least
 
 That floor of 5, not 6, accounts for `test_real_429_with_retry_after`, which
 is a *permanent*, intentional `pytest.skip()` (see "What each live test
-checks" below) -- so a fully successful run looks like 5 passed + 1 skipped,
-never 6 passed. If `GROQ_API_KEY` is missing or wrong, every live test
+checks" below) -- so a fully successful Groq-only run looks like 5 passed +
+1 skipped, never 6 passed. With the optional OpenRouter secret set, its
+tests add to the passed count; the floor of 5 is unchanged. If `GROQ_API_KEY` is missing or wrong, every live test
 self-skips, `passed` comes back as `0`, and the job fails with:
 
 ```
