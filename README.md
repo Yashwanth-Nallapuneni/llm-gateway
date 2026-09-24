@@ -78,7 +78,8 @@ run: once committed spend would cross it, further prompts fail fast with a
 budget-exceeded error instead of being sent to a provider -- results already
 obtained are still written out in full, and the run exits non-zero with a
 count of how many prompts were skipped. A progress line is written to
-stderr as the run goes, unless `--quiet`. See `llm-gateway run --help` for
+stderr as the run goes, unless `--quiet`; the metrics report after the run
+is turned off separately with `--no-metrics`. See `llm-gateway run --help` for
 the full option list.
 
 `--provider` also accepts a comma-separated priority list, e.g. `--provider
@@ -128,7 +129,8 @@ llm-gateway run 20k_prompts.jsonl --store sweep.db --resume --output out.jsonl
 `--resume` is required whenever `--store` points at a file that already has
 rows in it, so a stale or mistyped path fails loudly instead of silently
 merging into an unrelated run. The run summary reports how many prompts
-were served from the store versus freshly called. Replay returns each
+were served from the store versus freshly called; the metrics table
+above that line counts only the fresh calls. Replay returns each
 prompt's first answer, not a new sample -- correct for reproducing an eval,
 not for resampling at temperature > 0.
 

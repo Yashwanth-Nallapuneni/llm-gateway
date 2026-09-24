@@ -904,3 +904,12 @@ def test_store_without_resume_on_existing_file_is_rejected(tmp_path):
 # --------------------------------------------------------------------------
 # Ctrl-C / interruption mid-run
 # --------------------------------------------------------------------------
+
+
+def test_dry_run_flags_a_zero_estimate_as_unpriced(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    input_path = tmp_path / "p.txt"
+    input_path.write_text("hello\n")
+    code = main(["run", str(input_path), "--provider", "groq", "--dry-run"])
+    assert code == 0
+    assert "no per-token prices are configured" in capsys.readouterr().err

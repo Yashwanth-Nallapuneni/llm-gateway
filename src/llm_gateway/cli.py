@@ -819,6 +819,14 @@ def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
                 )
             else:
                 print(f"estimated cost: ${cost:.4f}", file=err)
+            if cost == 0:
+                # A zero usually means no per-token prices are set for this
+                # provider, not that the run is free.
+                print(
+                    "note: no per-token prices are configured for this "
+                    "provider, so the estimate is $0; check its pricing page",
+                    file=err,
+                )
         return 0
 
     if any_paid:
