@@ -770,9 +770,21 @@ def _check_budget_flags(args: argparse.Namespace) -> None:
         raise CliError(f"--max-total-tokens must be > 0, got {args.max_total_tokens}")
 
 
+def _check_writable(*paths: str | None) -> None:
+    """Fail before any prompt is sent if an output file cannot be written,
+    so a run is never paid for and then lost at the end."""
+    for path in paths:
+        if path is None:
+            continue
+        parent = os.path.dirname(os.path.abspath(path))
+        if not os.path.isdir(parent) or not os.access(parent, os.W_OK):
+            raise CliError(f"cannot write {path}: directory missing or not writable")
+
+
 def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     _check_store_flags(args)
     _check_budget_flags(args)
+    _check_writable(args.output, args.metrics_json)
     items = read_input(args.input)
     if args.limit is not None:
         if args.limit < 0:

@@ -715,7 +715,7 @@ def test_unwritable_output_path_is_rejected_cleanly(tmp_path, capsys):
         ]
     )
     assert code == 2
-    assert "could not write" in capsys.readouterr().err
+    assert "cannot write" in capsys.readouterr().err
 
 
 def test_unwritable_metrics_json_path_is_rejected_cleanly(tmp_path, capsys):
@@ -733,4 +733,4 @@ def test_unwritable_metrics_json_path_is_rejected_cleanly(tmp_path, capsys):
         ]
     )
     assert code == 2
-    assert "could not write" in capsys.readouterr().err
+    assert "cannot write" in capsys.readouterr().err
