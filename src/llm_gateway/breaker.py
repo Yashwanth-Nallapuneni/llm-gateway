@@ -81,6 +81,16 @@ class CircuitBreaker:
         if not self.allows_request():
             raise CircuitOpenError(f"circuit is {self.state.value}", status=None)
 
+    def release_probe(self) -> None:
+        """Give back a half-open probe that was reserved but never used.
+
+        The router reserves the probe while ranking candidates; if the
+        request was served by a different provider, this one never got its
+        trial call and must be allowed to try again later.
+        """
+        if self._state is State.HALF_OPEN:
+            self._probe_in_flight = False
+
     def record_success(self) -> None:
         self._state = State.CLOSED
         self._consecutive_failures = 0

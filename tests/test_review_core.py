@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from llm_gateway import LLMGateway
 from llm_gateway.breaker import CircuitBreaker, State
 from llm_gateway.providers.base import Provider
 from llm_gateway.providers.mock import MockClient, MockProvider
@@ -78,72 +79,36 @@ def test_half_open_allows_exactly_one_probe(clock) -> None:
     assert cb.allows_request() is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "known bug: ProviderRouter.select_all() calls "
-        "provider.breaker.allows_request() -- which has the side effect of "
-        "consuming a half-open breaker's single probe permit -- for every "
-        "eligible candidate it ranks, not just the one the caller actually "
-        "dispatches to. gateway._call_with_retry only calls the first "
-        "candidate when it succeeds, so a second, lower-ranked candidate "
-        "that happens to be HALF_OPEN has its one probe silently burned by "
-        "the ranking pass alone and is left stuck HALF_OPEN with no way to "
-        "recover, since nothing ever calls record_success/record_failure "
-        "on it. Fixing this needs routing.py to filter half-open providers "
-        "without tripping their probe (e.g. checking .state instead of "
-        "calling .allows_request()) and pushing the actual probe "
-        "consumption to the point of dispatch in gateway.py, which is out "
-        "of scope for this pass."
-    ),
-)
-def test_select_all_does_not_burn_the_probe_of_an_unused_half_open_candidate(
-    clock,
-) -> None:
-    a = Provider(
-        "a",
-        MockClient("a"),
-        ProviderCapabilities(),
-        rpm_limit=600,
-        tpm_limit=150_000,
-        failure_threshold=1,
-        recovery_timeout=30.0,
-        clock=clock,
-    )
-    b = Provider(
-        "b",
-        MockClient("b"),
-        ProviderCapabilities(),
-        rpm_limit=600,
-        tpm_limit=150_000,
-        failure_threshold=1,
-        recovery_timeout=30.0,
-        clock=clock,
-    )
-    # Both providers trip open, then recover to half-open.
+async def test_unused_half_open_candidate_keeps_its_probe(clock) -> None:
+    # Two providers are both half-open. The router reserves a probe on each
+    # while ranking, but the first one serves the request, so the second
+    # was never tried and must get its probe back.
+    def make(name: str) -> Provider:
+        return Provider(
+            name,
+            MockClient(name),
+            ProviderCapabilities(),
+            rpm_limit=600,
+            tpm_limit=150_000,
+            failure_threshold=1,
+            recovery_timeout=30.0,
+            clock=clock,
+        )
+
+    a, b = make("a"), make("b")
     a.breaker.record_failure()
     b.breaker.record_failure()
     clock.advance(30.0)
     assert a.breaker.state is State.HALF_OPEN
     assert b.breaker.state is State.HALF_OPEN
 
-    router = ProviderRouter()
-    req = LLMRequest("hi")
-    candidates = router.select_all(req, [a, b])
-    assert len(candidates) == 2  # both ranked as eligible
+    gw = LLMGateway(providers=[a, b])
+    async with gw:
+        resp = await gw.submit(LLMRequest("hi"))
 
-    # Only the first candidate is actually dispatched to and it succeeds --
-    # the second candidate's probe was never used.
-    winner = candidates[0]
-    winner.breaker.record_success()
-
-    loser = candidates[1]
-    # The loser's probe should still be available for a future real
-    # attempt, since select_all() only ranked it and never dispatched to
-    # it. This is what currently fails: allows_request() was already
-    # called (and returned True, consuming the probe) during select_all's
-    # own eligibility filtering.
-    assert loser.breaker.allows_request() is True
+    served, unused = (a, b) if resp.provider == "a" else (b, a)
+    assert served.breaker.state is State.CLOSED
+    assert unused.breaker.allows_request() is True
 
 
 # ---------------------------------------------------------------------------

@@ -301,8 +301,12 @@ class LLMGateway:
                 remaining, reservations = self._reserve_for_batch(candidates, batch)
 
             last_exc: Exception = ProviderError("no attempt was made")
-            for provider in candidates:
+            for i, provider in enumerate(candidates):
                 if not remaining:
+                    # The rest were never tried; hand back any half-open
+                    # probe the router reserved for them while ranking.
+                    for unused in candidates[i:]:
+                        unused.breaker.release_probe()
                     break
                 # `_call_with_retry` resolves every entry it can -- partially,
                 # for a non-batching provider whose members fail
