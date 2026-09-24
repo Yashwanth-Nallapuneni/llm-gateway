@@ -321,7 +321,9 @@ def make_prompts(
     ]
 
 
-def _cost(resp: LLMResponse, cost_per_1k_input: float, cost_per_1k_output: float) -> float:
+def _cost(
+    resp: LLMResponse, cost_per_1k_input: float, cost_per_1k_output: float
+) -> float:
     return (
         resp.input_tokens / 1000.0 * cost_per_1k_input
         + resp.output_tokens / 1000.0 * cost_per_1k_output
@@ -517,7 +519,9 @@ async def run_gateway(
     # Same reasoning as run_naive: a LiveCallBudgetExceeded anywhere in this
     # arm's results means the harness cut it off mid-run, not that the
     # gateway actually failed those prompts.
-    budget_exceeded = any(_is_budget_exceeded(r) for r in results if isinstance(r, BaseException))
+    budget_exceeded = any(
+        _is_budget_exceeded(r) for r in results if isinstance(r, BaseException)
+    )
 
     m = server.server_metrics
     return RunResult(
@@ -816,7 +820,9 @@ async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
     # covers the worst case makes that class of truncation impossible,
     # rather than merely making it visible after the fact.
     worst_case_calls = args.n_prompts * args.runs * 2 * args.max_attempts
-    planned_calls = args.n_prompts * args.runs * 2  # 2 arms, no retries, for the message below
+    planned_calls = (
+        args.n_prompts * args.runs * 2
+    )  # 2 arms, no retries, for the message below
     if worst_case_calls > max_live_calls:
         raise SystemExit(
             f"refusing to run live: worst case is --n-prompts {args.n_prompts} * "
@@ -909,10 +915,16 @@ async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
                 )
 
             first, second = arm_order_for_run(run_index, arm_order)
-            runners = {"naive": (do_naive, naive_runs), "gateway": (do_gateway, gateway_runs)}
+            runners = {
+                "naive": (do_naive, naive_runs),
+                "gateway": (do_gateway, gateway_runs),
+            }
             first_fn, first_list = runners[first]
             second_fn, second_list = runners[second]
-            print(f"run {run_index + 1}/{args.runs}: {first} arm first this time", flush=True)
+            print(
+                f"run {run_index + 1}/{args.runs}: {first} arm first this time",
+                flush=True,
+            )
             # Cooldown before EVERY arm, including this run's first arm --
             # whether that's the very first arm of the whole invocation
             # (prev_label="start") or the arm right after the previous run's
@@ -988,10 +1000,16 @@ block above) against the 429 counts below before drawing any conclusion.
 
 
 def build_header(args: argparse.Namespace) -> str:
-    lines = ["=" * 78, "LLM-GATEWAY BENCHMARK: naive asyncio loop vs LLMGateway", "=" * 78]
+    lines = [
+        "=" * 78,
+        "LLM-GATEWAY BENCHMARK: naive asyncio loop vs LLMGateway",
+        "=" * 78,
+    ]
     lines.append(f"timestamp (UTC):  {datetime.now(UTC).isoformat()}")
     lines.append(f"git commit:       {git_commit()}")
-    lines.append(f"python:           {sys.version.split()[0]} ({platform.python_implementation()})")
+    lines.append(
+        f"python:           {sys.version.split()[0]} ({platform.python_implementation()})"
+    )
     lines.append(f"platform:         {platform.platform()}")
     lines.append(f"processor:        {platform.processor() or 'unknown'}")
     lines.append(f"cpu_count:        {os.cpu_count()}")
@@ -1103,14 +1121,38 @@ def build_parser() -> argparse.ArgumentParser:
         description="Benchmark llm-gateway against a naive rate-limit-free async loop."
     )
     p.add_argument("--n-prompts", type=int, default=200)
-    p.add_argument("--runs", type=int, default=10, help="repetitions; report median + p5-p95")
+    p.add_argument(
+        "--runs", type=int, default=10, help="repetitions; report median + p5-p95"
+    )
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--concurrency", type=int, default=40, help="naive: bounded semaphore size")
-    p.add_argument("--server-rpm", type=float, default=190.0, help="server's real (enforced) RPM limit")
+    p.add_argument(
+        "--concurrency", type=int, default=40, help="naive: bounded semaphore size"
+    )
+    p.add_argument(
+        "--server-rpm",
+        type=float,
+        default=190.0,
+        help="server's real (enforced) RPM limit",
+    )
     p.add_argument("--server-latency-mean-ms", type=float, default=30.0)
-    p.add_argument("--server-latency-sigma", type=float, default=0.5, help="log-normal shape parameter")
-    p.add_argument("--server-fail-rate", type=float, default=0.03, help="probability of an injected transient 503 per call")
-    p.add_argument("--gateway-tpm", type=float, default=10_000_000.0, help="high on purpose: TPM is not the constraint under test")
+    p.add_argument(
+        "--server-latency-sigma",
+        type=float,
+        default=0.5,
+        help="log-normal shape parameter",
+    )
+    p.add_argument(
+        "--server-fail-rate",
+        type=float,
+        default=0.03,
+        help="probability of an injected transient 503 per call",
+    )
+    p.add_argument(
+        "--gateway-tpm",
+        type=float,
+        default=10_000_000.0,
+        help="high on purpose: TPM is not the constraint under test",
+    )
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument(
         "--batch-endpoint",
@@ -1120,10 +1162,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--batch-wait-ms", type=float, default=25.0)
     p.add_argument("--batch-tokens", type=int, default=8000)
-    p.add_argument("--max-attempts", type=int, default=6, help="shared by both arms' RetryPolicy")
+    p.add_argument(
+        "--max-attempts", type=int, default=6, help="shared by both arms' RetryPolicy"
+    )
     p.add_argument("--base-delay", type=float, default=0.5)
     p.add_argument("--max-delay", type=float, default=8.0)
-    p.add_argument("--max-tokens", type=int, default=256, help="LLMRequest.max_tokens for every prompt")
+    p.add_argument(
+        "--max-tokens",
+        type=int,
+        default=256,
+        help="LLMRequest.max_tokens for every prompt",
+    )
     p.add_argument(
         "--prompt-words-min",
         type=int,
@@ -1142,7 +1191,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--cost-per-1k-input", type=float, default=0.02)
     p.add_argument("--cost-per-1k-output", type=float, default=0.04)
-    p.add_argument("--json", dest="json_path", default=None, help="dump raw per-run numbers to this file")
+    p.add_argument(
+        "--json",
+        dest="json_path",
+        default=None,
+        help="dump raw per-run numbers to this file",
+    )
     p.add_argument("--markdown", action="store_true", help="also print a markdown table")
     p.add_argument(
         "--arm-cooldown",
@@ -1253,11 +1307,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.markdown:
         print()
-        print(render_markdown(naive_summary, gateway_summary, result["n_prompts"], args.runs))
+        print(
+            render_markdown(
+                naive_summary, gateway_summary, result["n_prompts"], args.runs
+            )
+        )
 
     if live:
-        print(f"\nlive HTTP calls made this invocation: {result['live_calls_used']} "
-              f"(ceiling was --max-live-calls {args.max_live_calls})")
+        print(
+            f"\nlive HTTP calls made this invocation: {result['live_calls_used']} "
+            f"(ceiling was --max-live-calls {args.max_live_calls})"
+        )
 
     if args.json_path:
         dump_json(args.json_path, args, result, naive_summary, gateway_summary)

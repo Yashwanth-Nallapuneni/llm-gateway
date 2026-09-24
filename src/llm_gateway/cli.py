@@ -85,9 +85,11 @@ def _parse_jsonl_lines(lines: Iterable[str]) -> list[PromptItem]:
         except json.JSONDecodeError as exc:
             raise CliError(f"invalid JSON on line {lineno}: {exc.msg}") from exc
         if not isinstance(obj, dict):
-            raise CliError(f"line {lineno}: expected a JSON object, got {type(obj).__name__}")
+            raise CliError(
+                f"line {lineno}: expected a JSON object, got {type(obj).__name__}"
+            )
         if "prompt" not in obj or not isinstance(obj["prompt"], str):
-            raise CliError(f"line {lineno}: missing required string field \"prompt\"")
+            raise CliError(f'line {lineno}: missing required string field "prompt"')
         items.append(
             PromptItem(
                 id=str(obj.get("id", len(items))),
@@ -180,7 +182,9 @@ def _parse_model_map(model_arg: str | None, provider_names: list[str]) -> dict[s
         name, _, value = part.partition("=")
         name = name.strip()
         if name not in provider_names:
-            raise CliError(f"--model names {args_provider_hint(provider_names)}, got {name!r}")
+            raise CliError(
+                f"--model names {args_provider_hint(provider_names)}, got {name!r}"
+            )
         mapping[name] = value.strip()
     return mapping
 
@@ -242,7 +246,9 @@ def build_providers(args: argparse.Namespace) -> list[Provider]:
         raise CliError("--provider: at least one provider name is required")
     for n in names:
         if n not in PROVIDER_CHOICES:
-            raise CliError(f"--provider: unknown provider {n!r}, choose from {PROVIDER_CHOICES}")
+            raise CliError(
+                f"--provider: unknown provider {n!r}, choose from {PROVIDER_CHOICES}"
+            )
 
     if len(names) > 1 and args.api_key:
         raise CliError(
@@ -298,7 +304,9 @@ def estimate(
         input_tokens += req.estimated_input_tokens()
         output_tokens += req.max_tokens
         total_tokens += req.estimated_total_tokens()
-    worst_provider = max(providers, key=lambda p: p.estimated_cost(input_tokens, output_tokens))
+    worst_provider = max(
+        providers, key=lambda p: p.estimated_cost(input_tokens, output_tokens)
+    )
     cost = worst_provider.estimated_cost(input_tokens, output_tokens)
     return total_tokens, cost, worst_provider.name
 
@@ -381,7 +389,9 @@ class _Progress:
     line no one can read anyway.
     """
 
-    def __init__(self, stream: TextIO, total: int, *, clock: Callable[[], float] | None = None) -> None:
+    def __init__(
+        self, stream: TextIO, total: int, *, clock: Callable[[], float] | None = None
+    ) -> None:
         self._clock = clock or time.monotonic
         self.stream = stream
         self.total = total
@@ -505,13 +515,10 @@ async def run_gateway(
             f"{gateway.freshly_called} freshly called"
         )
     if budget is not None:
-        report += (
-            f"\nbudget: ${budget.spent:.4f} spent of ${budget.limit_usd:.4f} limit"
-        )
+        report += f"\nbudget: ${budget.spent:.4f} spent of ${budget.limit_usd:.4f} limit"
         if budget_skipped:
             report += (
-                f"; {budget_skipped} of {len(items)} prompt(s) skipped "
-                "(budget exceeded)"
+                f"; {budget_skipped} of {len(items)} prompt(s) skipped (budget exceeded)"
             )
     return rows, any_failed, report, metrics_dict
 
@@ -526,9 +533,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="llm-gateway",
         description="Send a file of prompts through llm-gateway without writing Python.",
     )
-    parser.add_argument(
-        "--version", action="version", version=f"%(prog)s {__version__}"
-    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
     run = subparsers.add_parser(
@@ -604,9 +609,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional total token ceiling for this run. Requires --budget.",
     )
     run.add_argument("--output", default=None, help="Write JSONL here instead of stdout.")
-    run.add_argument("--limit", type=int, default=None, help="Only process the first N prompts.")
-    run.add_argument("--quiet", action="store_true", help="Suppress progress/guard chatter on stderr.")
-    run.add_argument("--no-metrics", action="store_true", help="Do not print the metrics report.")
+    run.add_argument(
+        "--limit", type=int, default=None, help="Only process the first N prompts."
+    )
+    run.add_argument(
+        "--quiet", action="store_true", help="Suppress progress/guard chatter on stderr."
+    )
+    run.add_argument(
+        "--no-metrics", action="store_true", help="Do not print the metrics report."
+    )
     run.add_argument(
         "--metrics-json",
         default=None,
@@ -614,8 +625,12 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Write a machine-readable metrics snapshot (JSON) to PATH.",
     )
-    run.add_argument("--dry-run", action="store_true", help="Parse and estimate only; no calls.")
-    run.add_argument("--yes", action="store_true", help="Skip the cost confirmation prompt.")
+    run.add_argument(
+        "--dry-run", action="store_true", help="Parse and estimate only; no calls."
+    )
+    run.add_argument(
+        "--yes", action="store_true", help="Skip the cost confirmation prompt."
+    )
     run.add_argument(
         "--store",
         default=None,
@@ -699,11 +714,18 @@ def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
 
     if any_paid:
         _, cost, worst_name = estimate(items, args, providers)
-        _confirm_cost(cost, worst_name if len(providers) > 1 else provider_names[0],
-                      assume_yes=args.yes, quiet=args.quiet)
+        _confirm_cost(
+            cost,
+            worst_name if len(providers) > 1 else provider_names[0],
+            assume_yes=args.yes,
+            quiet=args.quiet,
+        )
 
     if not args.quiet:
-        print(f"running {len(items)} prompt(s) through {','.join(provider_names)}...", file=err)
+        print(
+            f"running {len(items)} prompt(s) through {','.join(provider_names)}...",
+            file=err,
+        )
 
     rows, any_failed, report, metrics_dict = asyncio.run(
         run_gateway(providers, items, args, err)

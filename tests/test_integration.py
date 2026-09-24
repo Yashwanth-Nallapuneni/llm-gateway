@@ -214,9 +214,15 @@ async def test_breaker_recovers_and_traffic_returns_to_the_primary():
 async def test_batches_do_not_mix_capability_requirements_end_to_end():
     # Large limits on both so headroom stays level and cost decides; this
     # test is about capability grouping, not about the headroom ranker.
-    plain = MockProvider("plain", cost_per_1k_output=0.01, rpm_limit=100_000, tpm_limit=10**7)
+    plain = MockProvider(
+        "plain", cost_per_1k_output=0.01, rpm_limit=100_000, tpm_limit=10**7
+    )
     fancy = MockProvider(
-        "fancy", supports_logprobs=True, cost_per_1k_output=5.0, rpm_limit=100_000, tpm_limit=10**7
+        "fancy",
+        supports_logprobs=True,
+        cost_per_1k_output=5.0,
+        rpm_limit=100_000,
+        tpm_limit=10**7,
     )
     gw = LLMGateway(
         providers=[plain, fancy],
@@ -497,7 +503,9 @@ async def test_complete_batch_settled_shares_one_exception_for_a_true_batch_fail
     # checking object identity (see the comment in gateway.py).
     client = MockClient("atomic", fail_status=503)
     provider = MockProvider("atomic", client=client)
-    results = await provider.complete_batch_settled([LLMRequest(f"p{i}") for i in range(4)])
+    results = await provider.complete_batch_settled(
+        [LLMRequest(f"p{i}") for i in range(4)]
+    )
     assert len(results) == 4
     assert all(isinstance(r, ProviderError) for r in results)
     first = results[0]
@@ -537,7 +545,9 @@ async def test_whole_provider_outage_still_fails_over_every_request_in_the_batch
     # non-batching provider, all of them -- not just the one blocking the
     # retry budget -- move to the backup together.
     client = MockClient("dead", fail_status=503)
-    dead = MockProvider("dead", client=client, supports_batching=False, max_concurrency=16)
+    dead = MockProvider(
+        "dead", client=client, supports_batching=False, max_concurrency=16
+    )
     backup = MockProvider("backup")
     gw = LLMGateway(
         providers=[dead, backup],

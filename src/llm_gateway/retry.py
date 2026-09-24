@@ -21,6 +21,7 @@ class _RandomLike(Protocol):
 
     def uniform(self, a: float, b: float) -> float: ...
 
+
 # Retryable means "the same request, sent again, could plausibly succeed".
 # These are server-side or transport-side conditions: the request itself
 # was fine, the far end was momentarily unable to serve it.
@@ -108,7 +109,7 @@ class RetryPolicy:
         # returning `Any` (it must cover negative exponents, which escape int),
         # which would otherwise leak Any through `raw` and `delay` below. The
         # float base gives the identical value with a real `float` type.
-        raw = self.base_delay * (2.0 ** attempt)
+        raw = self.base_delay * (2.0**attempt)
 
         # The cap must be applied BEFORE jitter, not after. 2**attempt
         # overflows into minutes-then-hours by attempt 12; capping first

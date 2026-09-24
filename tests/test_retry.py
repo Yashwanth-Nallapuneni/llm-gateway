@@ -88,7 +88,7 @@ def test_retry_after_is_read_off_the_exception():
 
 def test_unknown_status_defaults_to_its_class():
     p = policy()
-    assert p.should_retry(ProviderError("x", status=507), 0) is True   # unknown 5xx
+    assert p.should_retry(ProviderError("x", status=507), 0) is True  # unknown 5xx
     assert p.should_retry(ProviderError("x", status=418), 0) is False  # unknown 4xx
 
 

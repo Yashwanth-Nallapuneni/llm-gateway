@@ -26,19 +26,30 @@ from llm_gateway.providers.openrouter import (
 )
 
 
-def make_client(handler, *, base_url: str = "https://example.test/v1", **kwargs) -> httpx.AsyncClient:
+def make_client(
+    handler, *, base_url: str = "https://example.test/v1", **kwargs
+) -> httpx.AsyncClient:
     transport = httpx.MockTransport(handler)
     return httpx.AsyncClient(transport=transport, base_url=base_url, **kwargs)
 
 
-def success_body(text: str = "hello there", *, prompt_tokens=10, completion_tokens=5,
-                  logprobs=None, model="test-model", finish_reason="stop",
-                  omit_finish_reason=False) -> dict:
+def success_body(
+    text: str = "hello there",
+    *,
+    prompt_tokens=10,
+    completion_tokens=5,
+    logprobs=None,
+    model="test-model",
+    finish_reason="stop",
+    omit_finish_reason=False,
+) -> dict:
     choice: dict = {"message": {"role": "assistant", "content": text}, "index": 0}
     if not omit_finish_reason:
         choice["finish_reason"] = finish_reason
     if logprobs is not None:
-        choice["logprobs"] = {"content": [{"token": t, "logprob": lp} for t, lp in logprobs]}
+        choice["logprobs"] = {
+            "content": [{"token": t, "logprob": lp} for t, lp in logprobs]
+        }
     return {
         "id": "chatcmpl-1",
         "model": model,
@@ -58,11 +69,16 @@ async def test_successful_completion_parses_text_and_tokens():
         assert payload["model"] == "test-model"
         assert payload["messages"] == [{"role": "user", "content": "hi"}]
         assert payload["max_tokens"] == 50
-        return httpx.Response(200, json=success_body("hello there", prompt_tokens=12, completion_tokens=6))
+        return httpx.Response(
+            200, json=success_body("hello there", prompt_tokens=12, completion_tokens=6)
+        )
 
     http_client = make_client(handler)
     client = OpenAICompatibleClient(
-        base_url="https://example.test/v1", api_key="k", model="test-model", client=http_client
+        base_url="https://example.test/v1",
+        api_key="k",
+        model="test-model",
+        client=http_client,
     )
     resp = await client.complete(LLMRequest(prompt="hi", max_tokens=50))
     assert resp.text == "hello there"
@@ -80,7 +96,10 @@ async def test_request_model_override():
 
     http_client = make_client(handler)
     client = OpenAICompatibleClient(
-        base_url="https://example.test/v1", api_key="k", model="default-model", client=http_client
+        base_url="https://example.test/v1",
+        api_key="k",
+        model="default-model",
+        client=http_client,
     )
     await client.complete(LLMRequest(prompt="hi", model="override-model"))
     assert seen["model"] == "override-model"
@@ -155,7 +174,9 @@ async def test_finish_reason_stop_is_parsed():
 
 async def test_finish_reason_length_is_parsed_and_exposed():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=success_body("partial answ", finish_reason="length"))
+        return httpx.Response(
+            200, json=success_body("partial answ", finish_reason="length")
+        )
 
     http_client = make_client(handler)
     client = OpenAICompatibleClient(
@@ -269,7 +290,10 @@ async def test_401_is_status_401_and_not_retried():
 
     http_client = make_client(handler)
     client = OpenAICompatibleClient(
-        base_url="https://example.test/v1", api_key="bad-key", model="m", client=http_client
+        base_url="https://example.test/v1",
+        api_key="bad-key",
+        model="m",
+        client=http_client,
     )
     with pytest.raises(ProviderError) as excinfo:
         await client.complete(LLMRequest(prompt="hi"))
@@ -375,7 +399,9 @@ async def test_on_headers_called_on_success():
     captured: list[Mapping[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"x-ratelimit-remaining": "99"}, json=success_body())
+        return httpx.Response(
+            200, headers={"x-ratelimit-remaining": "99"}, json=success_body()
+        )
 
     http_client = make_client(handler)
     client = OpenAICompatibleClient(
@@ -395,7 +421,9 @@ async def test_on_headers_called_on_error_and_swallows_consumer_exceptions():
     captured: list[Mapping[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(429, headers={"retry-after": "5"}, json={"error": {"message": "no"}})
+        return httpx.Response(
+            429, headers={"retry-after": "5"}, json={"error": {"message": "no"}}
+        )
 
     def bad_on_headers(headers: Mapping[str, str]) -> None:
         captured.append(dict(headers))
@@ -425,7 +453,9 @@ async def test_aclose_closes_self_built_client():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=success_body())
 
-    client = OpenAICompatibleClient(base_url="https://example.test/v1", api_key="k", model="m")
+    client = OpenAICompatibleClient(
+        base_url="https://example.test/v1", api_key="k", model="m"
+    )
     # Swap in a mock transport on the client it built for itself.
     client._client._transport = httpx.MockTransport(handler)
     await client.complete(LLMRequest(prompt="hi"))
@@ -464,16 +494,27 @@ async def test_groq_does_not_send_logprobs_params():
         return httpx.Response(200, json=success_body())
 
     http_client = make_client(handler)
-    client = GroqClient(base_url=GROQ_BASE_URL, api_key="k", model="llama-3.3-70b-versatile", client=http_client)
+    client = GroqClient(
+        base_url=GROQ_BASE_URL,
+        api_key="k",
+        model="llama-3.3-70b-versatile",
+        client=http_client,
+    )
     client.logprobs_params = lambda: {}  # type: ignore[method-assign]
     await client.complete(LLMRequest(prompt="hi", needs_logprobs=True))
     await client.aclose()
 
 
 def test_groq_provider_capabilities():
-    provider = groq_provider(api_key="k", client=GroqClient(
-        base_url=GROQ_BASE_URL, api_key="k", model="m", client=make_client(lambda r: httpx.Response(200))
-    ))
+    provider = groq_provider(
+        api_key="k",
+        client=GroqClient(
+            base_url=GROQ_BASE_URL,
+            api_key="k",
+            model="m",
+            client=make_client(lambda r: httpx.Response(200)),
+        ),
+    )
     assert provider.capabilities.supports_logprobs is False
     assert provider.capabilities.supports_strict_json is True
     assert provider.capabilities.supports_batching is False
@@ -575,7 +616,9 @@ async def test_openrouter_402_notifies_headers_exactly_once():
 
 def test_openrouter_provider_capabilities():
     http_client = make_client(lambda r: httpx.Response(200))
-    client = OpenRouterClient(base_url=OPENROUTER_BASE_URL, api_key="k", model="m", client=http_client)
+    client = OpenRouterClient(
+        base_url=OPENROUTER_BASE_URL, api_key="k", model="m", client=http_client
+    )
     provider = openrouter_provider(api_key="k", model="some/model", client=client)
     assert provider.capabilities.supports_batching is False
     assert provider.name == "openrouter"
@@ -595,7 +638,9 @@ async def test_gateway_end_to_end_over_mock_transport():
         )
 
     http_client = make_client(handler)
-    client = GroqClient(base_url=GROQ_BASE_URL, api_key="k", model="m", client=http_client)
+    client = GroqClient(
+        base_url=GROQ_BASE_URL, api_key="k", model="m", client=http_client
+    )
     provider = groq_provider(api_key="k", client=client)
 
     gateway = LLMGateway([provider])

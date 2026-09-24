@@ -145,9 +145,10 @@ class MetricsSink:
 
         if d["failures_by_class"]:
             lines.append("")
-            lines.append("failures by class: " + ", ".join(
-                f"{k}={v}" for k, v in d["failures_by_class"].items()
-            ))
+            lines.append(
+                "failures by class: "
+                + ", ".join(f"{k}={v}" for k, v in d["failures_by_class"].items())
+            )
 
         hist = d["batch_histogram"]
         if hist:

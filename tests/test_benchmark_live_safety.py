@@ -65,14 +65,18 @@ def test_is_budget_exceeded_does_not_loop_on_self_referential_chain() -> None:
     assert not bench._is_budget_exceeded(exc)
 
 
-def test_valid_runs_passes_through_when_nothing_invalid(capsys: pytest.CaptureFixture[str]) -> None:
+def test_valid_runs_passes_through_when_nothing_invalid(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     runs = [make_run(), make_run()]
     ok = bench.valid_runs(runs, "naive")
     assert ok == runs
     assert "WARNING" not in capsys.readouterr().out
 
 
-def test_valid_runs_drops_truncated_arms_and_warns(capsys: pytest.CaptureFixture[str]) -> None:
+def test_valid_runs_drops_truncated_arms_and_warns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     runs = [make_run(), make_run(invalid=True)]
     ok = bench.valid_runs(runs, "naive")
     assert ok == [runs[0]]
@@ -96,7 +100,9 @@ def test_summarize_of_truncated_runs_never_reaches_reporting() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cooldown_fires_at_every_arm_boundary_including_across_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cooldown_fires_at_every_arm_boundary_including_across_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The actual confound fix: with --arm-cooldown set, a sleep must happen
     before every arm -- 2 per run (start-of-run boundary + mid-run boundary)
     -- not just once between the two arms inside each run."""
@@ -140,7 +146,9 @@ async def test_cooldown_fires_at_every_arm_boundary_including_across_runs(monkey
     assert len(cooldowns) == 6
 
 
-def test_live_refuses_to_start_below_worst_case_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_live_refuses_to_start_below_worst_case_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A ceiling sized to the best case (no retries) is exactly what let an
     arm get truncated mid-run in the retracted attempt. run_all_live must
     refuse to start rather than risk it -- and must refuse before touching
@@ -163,7 +171,9 @@ def test_live_refuses_to_start_below_worst_case_ceiling(monkeypatch: pytest.Monk
 
 def test_live_missing_api_key_refuses_to_start(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    args = bench.argparse.Namespace(n_prompts=1, runs=1, max_attempts=1, max_live_calls=100)
+    args = bench.argparse.Namespace(
+        n_prompts=1, runs=1, max_attempts=1, max_live_calls=100
+    )
     with pytest.raises(SystemExit) as exc_info:
         import asyncio
 

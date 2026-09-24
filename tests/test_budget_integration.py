@@ -40,7 +40,9 @@ async def test_generous_budget_completes_normally_and_ledger_matches_cost():
     gw = LLMGateway(providers=[provider], retry=fast_retry(), budget=budget)
 
     async with gw:
-        responses = await gw.submit_many([LLMRequest(f"p{i}", max_tokens=16) for i in range(10)])
+        responses = await gw.submit_many(
+            [LLMRequest(f"p{i}", max_tokens=16) for i in range(10)]
+        )
 
     assert len(responses) == 10
     assert budget.spent > 0

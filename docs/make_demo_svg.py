@@ -91,7 +91,9 @@ def build_svg(lines: list[str]) -> str:
     )
     for i, color in enumerate(["#ff5f56", "#ffbd2e", "#27c93f"]):
         cx = 20 + i * 20
-        svg_parts.append(f'<circle cx="{cx}" cy="{CHROME_HEIGHT / 2}" r="6" fill="{color}"/>')
+        svg_parts.append(
+            f'<circle cx="{cx}" cy="{CHROME_HEIGHT / 2}" r="6" fill="{color}"/>'
+        )
     svg_parts.append(
         f'<text x="{width / 2}" y="{CHROME_HEIGHT / 2 + 4}" fill="{dim}" '
         f'font-size="12" text-anchor="middle">failover_demo.py</text>'
@@ -106,7 +108,7 @@ def build_svg(lines: list[str]) -> str:
         f'<clipPath id="{clip_id}"><rect x="0" y="0" height="{LINE_HEIGHT}" width="0">'
         f'<animate attributeName="width" from="0" to="{full_text_width:.1f}" '
         f'begin="0.3s" dur="{TYPE_DURATION}s" fill="freeze" calcMode="linear"/>'
-        f'</rect></clipPath>'
+        f"</rect></clipPath>"
     )
     svg_parts.append(
         f'<g clip-path="url(#{clip_id})" transform="translate({PAD_X}, {prompt_y - LINE_HEIGHT + 5})">'
@@ -123,7 +125,7 @@ def build_svg(lines: list[str]) -> str:
         f'<animate attributeName="opacity" values="1;0;1" dur="0.9s" '
         f'begin="0s" repeatCount="indefinite"/>'
         f'<animate attributeName="opacity" to="0" begin="{first_line_start}s" dur="0.01s" fill="freeze"/>'
-        f'</rect>'
+        f"</rect>"
     )
 
     # Output lines fade in one by one, in real captured order

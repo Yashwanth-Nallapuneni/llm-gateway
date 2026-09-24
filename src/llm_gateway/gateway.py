@@ -174,7 +174,9 @@ class LLMGateway:
                 f"request timed out after {request.timeout_s}s"
             ) from None
 
-    async def _submit_with_store(self, store: RunStore, request: LLMRequest) -> LLMResponse:
+    async def _submit_with_store(
+        self, store: RunStore, request: LLMRequest
+    ) -> LLMResponse:
         """Store-backed path: check first, reserve, call, then durably
         record the outcome. See store.py for why `reserve`/`complete`/
         `fail` are ordered the way they are -- this is just the caller of
@@ -491,9 +493,7 @@ class LLMGateway:
 
                 blocked_start = self._clock()
                 await provider.limiter.acquire(len(requests), n_tokens)
-                self.metrics.record_blocked(
-                    provider.name, self._clock() - blocked_start
-                )
+                self.metrics.record_blocked(provider.name, self._clock() - blocked_start)
                 self.metrics.record_attempt(provider.name)
 
                 # The concurrency slot is acquired inside provider.complete()
@@ -515,9 +515,7 @@ class LLMGateway:
                 # shares this one cause.
                 last_exc = exc
                 provider.breaker.record_failure()
-                self.metrics.record_failure(
-                    provider.name, getattr(exc, "status", None)
-                )
+                self.metrics.record_failure(provider.name, getattr(exc, "status", None))
                 leftover.extend(pending)
                 return leftover, last_exc
 
@@ -597,9 +595,7 @@ class LLMGateway:
             # which always sets last_exc first -- so this is never None here.
             assert last_exc is not None
             self.metrics.record_retry(provider.name)
-            delay = self.retry.delay_for(
-                attempt, self.retry.retry_after_from(last_exc)
-            )
+            delay = self.retry.delay_for(attempt, self.retry.retry_after_from(last_exc))
             attempt += 1
             await asyncio.sleep(delay)
             pending = retryable

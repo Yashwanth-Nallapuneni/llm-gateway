@@ -475,13 +475,17 @@ class ProviderLimiter:
             if req_remaining is not None:
                 remaining = _parse_float(req_remaining)
                 if remaining is not None:
-                    reset_in = _parse_duration(req_reset) if req_reset is not None else None
+                    reset_in = (
+                        _parse_duration(req_reset) if req_reset is not None else None
+                    )
                     self.requests.sync(remaining, reset_in)
 
             if tok_remaining is not None:
                 remaining = _parse_float(tok_remaining)
                 if remaining is not None:
-                    reset_in = _parse_duration(tok_reset) if tok_reset is not None else None
+                    reset_in = (
+                        _parse_duration(tok_reset) if tok_reset is not None else None
+                    )
                     self.tokens.sync(remaining, reset_in)
         except Exception:
             # Unparseable or missing values must be ignored silently, per

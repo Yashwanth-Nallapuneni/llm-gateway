@@ -46,7 +46,8 @@ class RequestQueue:
         return heapq.heappop(self._heap)[2]
 
     async def pop(
-        self, timeout: float | None = None  # noqa: ASYNC109
+        self,
+        timeout: float | None = None,  # noqa: ASYNC109
     ) -> QueuedRequest | None:
         """Pop the highest-priority item, waiting up to `timeout` seconds.
 

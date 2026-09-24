@@ -79,9 +79,7 @@ class CircuitBreaker:
     def check(self) -> None:
         """Raise instead of returning False. Used on the dispatch path."""
         if not self.allows_request():
-            raise CircuitOpenError(
-                f"circuit is {self.state.value}", status=None
-            )
+            raise CircuitOpenError(f"circuit is {self.state.value}", status=None)
 
     def record_success(self) -> None:
         self._state = State.CLOSED

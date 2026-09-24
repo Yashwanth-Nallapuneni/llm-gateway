@@ -31,9 +31,7 @@ def test_happy_path_writes_output_file(tmp_path, capsys):
     input_path = _write(
         tmp_path,
         "prompts.jsonl",
-        "\n".join(
-            json.dumps({"id": f"p{i}", "prompt": f"hello {i}"}) for i in range(5)
-        ),
+        "\n".join(json.dumps({"id": f"p{i}", "prompt": f"hello {i}"}) for i in range(5)),
     )
     output_path = tmp_path / "out.jsonl"
 
@@ -63,9 +61,7 @@ def test_order_preserved(tmp_path):
     )
     output_path = tmp_path / "out.jsonl"
 
-    code = main(
-        ["run", str(input_path), "--output", str(output_path), "--no-metrics"]
-    )
+    code = main(["run", str(input_path), "--output", str(output_path), "--no-metrics"])
 
     assert code == 0
     rows = _lines(output_path.read_text())
@@ -82,9 +78,7 @@ def test_txt_input(tmp_path):
     input_path = _write(tmp_path, "prompts.txt", "first prompt\nsecond prompt\n")
     output_path = tmp_path / "out.jsonl"
 
-    code = main(
-        ["run", str(input_path), "--output", str(output_path), "--no-metrics"]
-    )
+    code = main(["run", str(input_path), "--output", str(output_path), "--no-metrics"])
 
     assert code == 0
     rows = _lines(output_path.read_text())
@@ -94,9 +88,7 @@ def test_txt_input(tmp_path):
 def test_stdin_input(tmp_path, monkeypatch, capsys):
     import io
 
-    monkeypatch.setattr(
-        "sys.stdin", io.StringIO("stdin prompt one\nstdin prompt two\n")
-    )
+    monkeypatch.setattr("sys.stdin", io.StringIO("stdin prompt one\nstdin prompt two\n"))
     output_path = tmp_path / "out.jsonl"
 
     code = main(["run", "-", "--output", str(output_path), "--no-metrics"])
@@ -233,9 +225,7 @@ def test_failing_prompt_does_not_abort_run(tmp_path, monkeypatch):
     input_path = _write(
         tmp_path,
         "prompts.jsonl",
-        "\n".join(
-            json.dumps({"prompt": p}) for p in ["good 1", "boom", "good 2"]
-        ),
+        "\n".join(json.dumps({"prompt": p}) for p in ["good 1", "boom", "good 2"]),
     )
     output_path = tmp_path / "out.jsonl"
 
@@ -326,7 +316,9 @@ def test_multi_provider_failover(tmp_path, monkeypatch):
         calls["n"] += 1
         if calls["n"] == 1:
             client = MockClient(name="primary", fail_status=503)
-            return real_mock_provider(name="primary", client=client, failure_threshold=1000)
+            return real_mock_provider(
+                name="primary", client=client, failure_threshold=1000
+            )
         client = MockClient(name="backup")
         return real_mock_provider(name="backup", client=client)
 
@@ -388,7 +380,15 @@ def test_single_provider_still_works_unchanged(tmp_path):
     output_path = tmp_path / "out.jsonl"
 
     code = main(
-        ["run", str(input_path), "--provider", "mock", "--output", str(output_path), "--no-metrics"]
+        [
+            "run",
+            str(input_path),
+            "--provider",
+            "mock",
+            "--output",
+            str(output_path),
+            "--no-metrics",
+        ]
     )
 
     assert code == 0
@@ -411,7 +411,9 @@ class _TTYStringIO(io.StringIO):
 
 def test_progress_not_printed_when_stderr_is_not_a_tty(tmp_path, capsys):
     input_path = _write(
-        tmp_path, "prompts.jsonl", "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5))
+        tmp_path,
+        "prompts.jsonl",
+        "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5)),
     )
 
     code = main(["run", str(input_path), "--output", str(tmp_path / "out.jsonl")])
@@ -423,12 +425,16 @@ def test_progress_not_printed_when_stderr_is_not_a_tty(tmp_path, capsys):
 
 def test_progress_not_printed_with_quiet(tmp_path, monkeypatch):
     input_path = _write(
-        tmp_path, "prompts.jsonl", "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5))
+        tmp_path,
+        "prompts.jsonl",
+        "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5)),
     )
     fake_err = _TTYStringIO()
     monkeypatch.setattr(sys, "stderr", fake_err)
 
-    code = main(["run", str(input_path), "--output", str(tmp_path / "out.jsonl"), "--quiet"])
+    code = main(
+        ["run", str(input_path), "--output", str(tmp_path / "out.jsonl"), "--quiet"]
+    )
 
     assert code == 0
     assert "\r" not in fake_err.getvalue()
@@ -436,7 +442,9 @@ def test_progress_not_printed_with_quiet(tmp_path, monkeypatch):
 
 def test_progress_printed_on_a_tty(tmp_path, monkeypatch):
     input_path = _write(
-        tmp_path, "prompts.jsonl", "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5))
+        tmp_path,
+        "prompts.jsonl",
+        "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5)),
     )
     fake_err = _TTYStringIO()
     monkeypatch.setattr(sys, "stderr", fake_err)
@@ -454,7 +462,9 @@ def test_progress_printed_on_a_tty(tmp_path, monkeypatch):
 
 def test_progress_does_not_pollute_stdout(tmp_path, capsys):
     input_path = _write(
-        tmp_path, "prompts.jsonl", "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5))
+        tmp_path,
+        "prompts.jsonl",
+        "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5)),
     )
 
     code = main(["run", str(input_path), "--no-metrics"])
@@ -486,7 +496,14 @@ def test_adaptive_flag_is_wired_to_the_gateway(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_module, "LLMGateway", spy_gateway)
 
     code = main(
-        ["run", str(input_path), "--output", str(tmp_path / "out.jsonl"), "--adaptive", "--no-metrics"]
+        [
+            "run",
+            str(input_path),
+            "--output",
+            str(tmp_path / "out.jsonl"),
+            "--adaptive",
+            "--no-metrics",
+        ]
     )
 
     assert code == 0
@@ -507,7 +524,9 @@ def test_adaptive_defaults_to_false(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_module, "LLMGateway", spy_gateway)
 
-    code = main(["run", str(input_path), "--output", str(tmp_path / "out.jsonl"), "--no-metrics"])
+    code = main(
+        ["run", str(input_path), "--output", str(tmp_path / "out.jsonl"), "--no-metrics"]
+    )
 
     assert code == 0
     assert seen["adaptive"] is False

@@ -105,6 +105,7 @@ def test_select_all_returns_ranked_survivors():
 
 def test_select_all_returns_empty_when_nothing_matches():
     router = ProviderRouter()
-    assert router.select_all(
-        LLMRequest("hi", needs_logprobs=True), [MockProvider("plain")]
-    ) == []
+    assert (
+        router.select_all(LLMRequest("hi", needs_logprobs=True), [MockProvider("plain")])
+        == []
+    )

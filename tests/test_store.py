@@ -124,9 +124,7 @@ async def test_partial_run_resumes_only_remainder(tmp_path):
     assert client.calls == 3  # only "three" made a fresh call
     assert gw2.served_from_store == 2
     assert gw2.freshly_called == 1
-    assert [r.text for r in results] == [
-        f"[a] {p}" for p in ("one", "two", "three")
-    ]
+    assert [r.text for r in results] == [f"[a] {p}" for p in ("one", "two", "three")]
     await store2.aclose()
 
 

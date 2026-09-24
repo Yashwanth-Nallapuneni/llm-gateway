@@ -36,10 +36,13 @@ precisely so you can see the machinery work before wiring up a real provider.
 import asyncio
 from llm_gateway import Batcher, LLMGateway, LLMRequest, MockProvider
 
+
 async def main():
     gateway = LLMGateway(
-        providers=[MockProvider("cheap", rpm_limit=600, cost_per_1k_output=0.02),
-                   MockProvider("backup", rpm_limit=1200, cost_per_1k_output=0.50)],
+        providers=[
+            MockProvider("cheap", rpm_limit=600, cost_per_1k_output=0.02),
+            MockProvider("backup", rpm_limit=1200, cost_per_1k_output=0.50),
+        ],
         batcher=Batcher(max_batch_size=16, max_wait_ms=50),
     )
     async with gateway:
@@ -48,6 +51,7 @@ async def main():
         )
     print(f"{len(responses)} responses")
     print(gateway.metrics.report())
+
 
 asyncio.run(main())
 ```

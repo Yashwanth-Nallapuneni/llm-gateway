@@ -88,7 +88,9 @@ class Reservation:
 
     __slots__ = ("_closed", "_ledger", "id", "tokens", "usd")
 
-    def __init__(self, ledger: BudgetLedger, reservation_id: int, usd: float, tokens: int) -> None:
+    def __init__(
+        self, ledger: BudgetLedger, reservation_id: int, usd: float, tokens: int
+    ) -> None:
         self._ledger = ledger
         self.id = reservation_id
         self.usd = usd
@@ -243,7 +245,9 @@ class BudgetLedger:
         self._outstanding[reservation_id] = reservation
         return reservation
 
-    def _settle(self, reservation: Reservation, actual_usd: float, actual_tokens: int | None) -> None:
+    def _settle(
+        self, reservation: Reservation, actual_usd: float, actual_tokens: int | None
+    ) -> None:
         if actual_usd < 0:
             raise ValueError(f"actual_usd must be >= 0, got {actual_usd}")
         self._outstanding.pop(reservation.id, None)

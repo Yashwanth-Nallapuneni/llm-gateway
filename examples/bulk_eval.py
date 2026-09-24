@@ -77,10 +77,14 @@ async def main() -> None:
     assert all(r.logprobs is not None for r in logprob_responses)
 
     print(gw.metrics.report())
-    print(f"\nwall clock: {elapsed:.2f}s for {N_REQUESTS} requests "
-          f"({N_REQUESTS / elapsed:.0f} req/s)")
-    print(f"logprob-requiring requests routed correctly: "
-          f"{len(logprob_responses)}/{len(logprob_responses)}")
+    print(
+        f"\nwall clock: {elapsed:.2f}s for {N_REQUESTS} requests "
+        f"({N_REQUESTS / elapsed:.0f} req/s)"
+    )
+    print(
+        f"logprob-requiring requests routed correctly: "
+        f"{len(logprob_responses)}/{len(logprob_responses)}"
+    )
 
 
 if __name__ == "__main__":

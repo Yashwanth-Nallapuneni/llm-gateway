@@ -72,13 +72,8 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
-      # `ruff format --check .` is not run here: as of this workflow's authoring,
-      # it would reformat 10 files (mostly wrapping long comment lines under
-      # src/llm_gateway and long assertions in their tests), which
-      # would churn those files for no functional benefit. Re-enable this line
-      # once the repo has been run through `ruff format` deliberately:
-      # - name: Ruff format check
-      #   run: ruff format --check .
+      - name: Ruff format check
+        run: ruff format --check .
 
       - name: Mypy
         run: mypy
