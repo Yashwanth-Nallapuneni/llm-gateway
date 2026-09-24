@@ -1,8 +1,4 @@
-"""Per-provider circuit breaker.
-
-Normal comments -- the state machine is small and the interesting part is
-*why it exists*, which is documented on the class.
-"""
+"""Per-provider circuit breaker."""
 
 from __future__ import annotations
 
@@ -22,13 +18,10 @@ class State(StrEnum):
 class CircuitBreaker:
     """Fails fast for a provider that is comprehensively down.
 
-    Without a breaker, a provider that is hard-down still absorbs the full
-    retry budget of every single request: five attempts with exponential
-    backoff each, per request, all guaranteed to fail. That adds tens of
-    seconds of latency and holds concurrency slots open for work that cannot
-    succeed. The breaker converts a slow, expensive failure into an instant
-    one, which is what lets the router move traffic elsewhere in time to
-    matter.
+    Without a breaker, a hard-down provider still absorbs the full retry
+    budget of every request, adding latency and holding slots open for
+    calls that cannot succeed. The breaker turns that slow failure into an
+    instant one, so the router can move traffic elsewhere in time.
     """
 
     def __init__(

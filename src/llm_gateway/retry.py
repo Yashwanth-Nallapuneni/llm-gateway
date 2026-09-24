@@ -22,17 +22,12 @@ class _RandomLike(Protocol):
     def uniform(self, a: float, b: float) -> float: ...
 
 
-# Retryable means "the same request, sent again, could plausibly succeed".
-# These are server-side or transport-side conditions: the request itself
-# was fine, the far end was momentarily unable to serve it.
+# Retryable means the same request sent again could plausibly succeed: the
+# request itself was fine, the far end just failed to serve it this time.
 RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
 
-# These are contract violations instead. A 400 means the request body is
-# wrong; a 401 means the key is wrong; a 422 means the schema is wrong.
-# Nothing about waiting and sending the identical bytes again changes any
-# of that. Retrying them is worse than useless -- it multiplies your
-# traffic against a guaranteed failure and can trip the provider's abuse
-# limits, turning a clean 400 into a 429 on every other request you send.
+# These mean the request itself is wrong (bad body, bad key, bad schema), so
+# retrying it is pointless and just adds traffic against a guaranteed failure.
 NON_RETRYABLE_STATUSES: frozenset[int] = frozenset({400, 401, 403, 404, 405, 409, 422})
 
 # Transport-level failures with no HTTP status at all.
@@ -69,21 +64,17 @@ class RetryPolicy:
 
         Not retryable: 400, 401, 403, 404, 422 -- identical failure on retry.
         """
-        # The attempt budget is checked first and separately. Whether an
-        # error *is* retryable and whether we still have budget *to* retry
-        # are different questions; collapsing them makes the logs lie
-        # ("gave up: non-retryable" when really you ran out of attempts).
+        # Check the attempt budget separately from whether the error is
+        # retryable, so the two questions never get conflated in the logs.
         # `attempt` is 0-indexed, so attempt 4 of max_attempts=5 is the last.
         if attempt >= self.max_attempts - 1:
             return False
 
         if isinstance(exc, ProviderError):
             status = exc.status
-            # An unknown 5xx is treated as retryable and an unknown 4xx as
-            # not. Default to the class's behaviour rather than refusing
-            # to decide -- providers invent status codes constantly. An
-            # explicit allowlist only would silently give up on any 5xx
-            # the provider adds after you shipped.
+            # An unknown status falls back to the class's usual behavior
+            # (5xx retryable, 4xx not), since providers invent new codes and
+            # a strict allowlist would silently stop retrying any new one.
             if status is None:
                 return True
             if status in NON_RETRYABLE_STATUSES:
@@ -92,65 +83,38 @@ class RetryPolicy:
                 return True
             return status >= 500
 
-        # Order matters here. ConnectionError is a subclass of OSError, and
-        # asyncio.TimeoutError is TimeoutError on 3.11+ -- a single
-        # isinstance against the tuple handles both without the
-        # overlapping-except-clause bug you get writing them separately.
+        # A single isinstance against the tuple, rather than separate checks,
+        # avoids overlap bugs since ConnectionError is an OSError subclass.
         return isinstance(exc, RETRYABLE_EXCEPTIONS)
 
     def delay_for(self, attempt: int, retry_after: float | None = None) -> float:
         """Seconds to wait before attempt N (0-indexed)."""
-        # Exponential, not linear. Under a linear backoff a persistent
-        # overload gets hammered at a nearly constant rate; doubling backs
-        # the fleet off fast enough for the far end to actually drain. A
-        # fixed delay would be simpler, but with N clients it converges on
-        # a constant-rate DDoS against an already-struggling service.
-        # `2.0 ** attempt`, not `2 ** attempt`: typeshed types int.__pow__ as
-        # returning `Any` (it must cover negative exponents, which escape int),
-        # which would otherwise leak Any through `raw` and `delay` below. The
-        # float base gives the identical value with a real `float` type.
-        #
-        # Cap the exponent itself before computing the power. A caller with
-        # a large max_attempts can reach attempt values in the hundreds or
-        # thousands; 2.0 ** attempt raises OverflowError once attempt gets
-        # into the low thousands, well before the min(raw, max_delay) below
-        # ever gets a chance to bound it. Any attempt past ~64 already
-        # produces a raw delay far beyond any realistic max_delay, so
-        # capping the exponent there changes nothing about the result.
+        # Doubling the delay each attempt (rather than a fixed wait) backs
+        # off fast enough for an overloaded service to actually drain.
+        # `2.0 ** attempt` uses a float base so the type stays float instead
+        # of the `Any` that int's power operator produces. The exponent is
+        # capped at 64 so it can't overflow for callers with a very large
+        # max_attempts; any attempt past that already produces a delay far
+        # beyond max_delay anyway.
         raw = self.base_delay * (2.0 ** min(attempt, 64))
 
-        # The cap must be applied BEFORE jitter, not after. 2**attempt
-        # overflows into minutes-then-hours by attempt 12; capping first
-        # bounds the worst case, and it also means jitter samples from a
-        # sane range instead of from [0, 4 hours].
+        # Cap before applying jitter, not after, so jitter samples from a
+        # sane range instead of one that could reach hours.
         delay = min(raw, self.max_delay)
 
         if self.jitter:
-            # Jitter is not optional. Without it, 500 clients that received
-            # 429 at the same instant compute the same delay and retry at
-            # the same instant. The retry storm reproduces exactly the
-            # overload that caused the failure -- the thundering herd.
-            # Equal jitter, delay/2 + uniform(0, delay/2), guarantees a
-            # minimum wait and has lower variance, but leaves half the
-            # delay synchronized across clients. Decorrelated jitter
-            # (sleep = uniform(base, prev*3)) spreads best but needs the
-            # previous delay as state, which makes delay_for() impure and
-            # much harder to test. Full jitter is chosen here: stateless,
-            # pure, and it minimizes collision probability. The price is
-            # high variance -- an unlucky client may retry almost
-            # immediately -- which is acceptable because the cap and the
-            # attempt budget bound the damage.
+            # Without jitter, many clients that get throttled at the same
+            # instant compute the same delay and retry in lockstep, which
+            # reproduces the overload that caused the failure (a "thundering
+            # herd"). Full jitter (sampling uniformly between 0 and delay)
+            # is used here because it is stateless and simple to test; it
+            # trades some variance in wait time for that simplicity.
             delay = self._rng.uniform(0, delay)
 
         if retry_after is not None:
-            # Retry-After dominates the computation -- use max(), never
-            # min(). The header is the provider telling you exactly when
-            # your quota resets; your backoff is a guess. Taking the
-            # smaller value means returning while still throttled, which
-            # earns another 429 and, on many providers, extends the
-            # penalty window. Returning retry_after verbatim instead would
-            # ignore your own escalation on repeated failures; max() keeps
-            # whichever is more conservative.
+            # A provider's Retry-After header is authoritative, so take the
+            # larger of it and our own backoff (max, never min) -- returning
+            # too early just earns another 429.
             delay = max(float(retry_after), delay)
 
         return delay

@@ -35,35 +35,25 @@ class TokenBucket:
 
         self.capacity = float(capacity)
         self.refill_rate = float(refill_rate)
-        # The rate as configured, kept aside so adaptive mode (see
-        # throttle()/recover() below) always has a fixed floor and ceiling
-        # to measure against, even after refill_rate itself has drifted up
-        # or down.
+        # Kept aside so adaptive mode (throttle()/recover() below) always
+        # has a fixed floor and ceiling to measure against, even after
+        # refill_rate itself has drifted up or down.
         self._configured_rate = self.refill_rate
 
-        # monotonic() is immune to system clock adjustments -- NTP sync, DST,
-        # an operator running `date -s`. It only ever moves forward.
-        # time.time() is wall-clock instead; if NTP steps the clock backward
-        # mid-run, `elapsed` goes negative, the bucket refills by a negative
-        # amount, and the limiter silently locks up until wall time catches
-        # back up to where it was.
+        # monotonic() only ever moves forward, unlike time.time(), which can
+        # jump backward on an NTP sync -- that would make elapsed time go
+        # negative and lock the limiter up.
         self._clock = clock or time.monotonic
         self._sleep = sleep or asyncio.sleep
 
-        # Start full. A process that has just booted has consumed none of
-        # the provider's budget, so it is entitled to the full burst.
-        # Starting empty instead would make callers wait C/r seconds for no
-        # reason.
+        # Start full: a freshly started process hasn't used any of the
+        # provider's budget yet, so it's entitled to the full burst.
         self._tokens = self.capacity
         self._last_refill = self._clock()
 
-        # The read-modify-write of (_tokens, _last_refill) is not atomic.
-        # Between reading _tokens and writing it back there is an await
-        # point in acquire(), so two coroutines can both observe "enough
-        # tokens" and both deduct, issuing 2x the allowed traffic. Skipping
-        # the lock "because asyncio is single-threaded" would be a mistake:
-        # single-threaded does not mean uninterrupted, it means interrupted
-        # only at awaits, and this method has one.
+        # acquire() awaits while holding tokens in hand, so two coroutines
+        # could both see "enough tokens" and both deduct without this lock,
+        # issuing twice the allowed traffic.
         self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -75,17 +65,13 @@ class TokenBucket:
         now = self._clock()
         elapsed = now - self._last_refill
 
-        # Lazy refill: compute what *would* have accumulated since the last
-        # call, rather than running a background task that ticks every N ms.
-        # A background task would cost one task per bucket, drift under
-        # event-loop congestion, and need explicit shutdown handling or it
-        # leaks on every gateway close.
+        # Computes what would have accumulated since the last call instead
+        # of running a background timer task, which would need its own
+        # shutdown handling and could drift under event-loop congestion.
+        # The min() clamp matters: without it, an idle bucket would accrue
+        # unbounded tokens and the next burst would blow through the
+        # provider's real limit.
         self._tokens = min(self.capacity, self._tokens + elapsed * self.refill_rate)
-
-        # The min() clamp above is load-bearing. Without it an idle bucket
-        # accrues unbounded tokens, and the first burst after a quiet hour
-        # blows straight through the provider's limit -- the exact 429 storm
-        # the limiter exists to prevent.
 
         self._last_refill = now
 
@@ -98,21 +84,17 @@ class TokenBucket:
 
         Must not busy-wait. Must be correct under concurrent callers.
         """
-        # A request larger than the bucket can never be satisfied -- the
-        # clamp in _refill() caps _tokens at capacity, so the loop below
-        # would sleep forever. Fail loudly at the boundary instead of
-        # hanging a coroutine with no traceback.
+        # A request bigger than the bucket's capacity can never be
+        # satisfied, since _refill() caps _tokens at capacity -- fail
+        # loudly here instead of hanging the caller forever.
         if tokens > self.capacity:
             raise ValueError(
                 f"requested {tokens} tokens but bucket capacity is {self.capacity}"
             )
 
-        # A loop, not a single sleep-then-take. Between computing the wait
-        # and waking up, another coroutine can consume the very tokens we
-        # were waiting for, so we re-check after every sleep. Sleeping for
-        # `deficit / refill_rate` and then deducting without re-checking is
-        # the classic over-issue bug: N waiters all wake up "entitled" to
-        # the same tokens and all deduct.
+        # Loops and re-checks after every sleep, rather than sleeping once
+        # and taking the tokens on trust -- another coroutine could grab the
+        # same tokens while this one was asleep.
         while True:
             async with self._lock:
                 self._refill()
@@ -121,32 +103,21 @@ class TokenBucket:
                     return
                 deficit = tokens - self._tokens
                 # Sleep exactly as long as the missing tokens take to
-                # refill. Precise, and no CPU burned in the meantime --
-                # polling on a fixed 10ms tick instead would busy-wait, add
-                # up to 10ms of latency per acquisition, and scale badly
-                # with waiters.
+                # refill, rather than polling on a fixed tick.
                 wait = deficit / self.refill_rate
 
-            # This await is deliberately OUTSIDE the `async with`. Holding
-            # the lock across a sleep serializes every waiter behind the
-            # first one: waiter #2 cannot even *check* the bucket until
-            # waiter #1 has slept its full duration, so throughput
-            # collapses to one acquisition per sleep instead of one per
-            # refill interval. This release/reacquire boundary is the
-            # subtlest bug in the module.
+            # This sleep happens outside the lock on purpose. Holding the
+            # lock while asleep would stop every other waiter from even
+            # checking the bucket until this one wakes up, serializing
+            # everyone behind a single sleep instead of letting them overlap.
             await self._sleep(wait)
 
     def try_acquire(self, tokens: float = 1.0) -> bool:
         """Non-blocking. Deduct and return True, or return False untouched."""
-        # No lock and no await. This function contains no await point, so
-        # the event loop cannot interleave another coroutine in the middle
-        # of it -- the read-modify-write is already atomic with respect to
-        # other coroutines on this loop. Making it `async` and taking the
-        # lock instead would make it awaitable, which is exactly wrong for
-        # a routing hot path that wants to *peek* at headroom without
-        # yielding control. Note this reasoning only holds for a single
-        # event loop; sharing one bucket across threads needs a
-        # threading.Lock instead.
+        # No lock and no await here, since this method never yields control,
+        # so the event loop can't interleave another coroutine in the
+        # middle of it. This only holds for a single event loop; sharing
+        # one bucket across real OS threads would need a threading.Lock.
         if tokens > self.capacity:
             return False
         self._refill()
@@ -161,82 +132,42 @@ class TokenBucket:
         `remaining` is the provider's own count of what is left in its
         window, as of the instant it built the response we just received.
         `reset_in`, if given, is how many seconds the provider says are left
-        until that window resets; see below for why it is accepted but
-        deliberately not used to adjust refill timing.
+        until that window resets; see below for why it is accepted but not
+        used to adjust refill timing.
 
-        This method exists at all because the local bucket is a model, not
-        a measurement -- it is seeded from a number a human typed into
-        config and then only ever updated by our own guesses about elapsed
-        time. If the configured limit is wrong, or another process/replica
-        is spending the same provider key, the model drifts away from what
-        the provider actually enforces, and we only find out via a 429.
-        The provider hands us ground truth on every single response; this
-        is where we fold it back in.
+        The local bucket is only ever a model, seeded from a configured
+        limit and updated by guessing at elapsed time -- it can drift from
+        what the provider actually enforces. This method folds the
+        provider's own count back in to correct that drift.
         """
-        # Refresh local accounting to "now" before comparing against the
-        # server's number. Without this, _tokens reflects whatever state it
-        # was left in at the last acquire/refill call, which could be
-        # arbitrarily stale relative to `self._clock()` -- comparing a
-        # current server number against a stale local one would make the
-        # min() below meaningless.
+        # Bring local accounting up to date before comparing against the
+        # server's number, so the comparison isn't against stale state.
         self._refill()
 
-        # min(), never max(). The server's number is already stale by the
-        # time we see it -- it describes the instant the response was
-        # generated, and any request we fired after that one (but before
-        # this one's response arrived) has already spent tokens the server
-        # hasn't told us about yet. Trusting a *larger* server number would
-        # hand back tokens we've already spent locally, and the very next
-        # burst would sail past the real limit straight into a 429 --
-        # precisely the failure this method exists to prevent. Taking the
-        # minimum means sync() can only ever make the bucket more
-        # conservative, never less; that asymmetry is the whole point and
-        # is what makes it safe to call unconditionally on every response.
-        # Overwriting unconditionally (`self._tokens = remaining`) would be
-        # simpler, but a single reordered or delayed response landing after
-        # a fresher one would silently hand back tokens and undo every
-        # deduction made since -- drift in the unsafe direction.
+        # Take the minimum, never the maximum. The server's number is
+        # already a little stale by the time we see it, since we may have
+        # spent more tokens after it was generated but before its response
+        # arrived. Trusting a larger server number would hand back tokens
+        # already spent locally. Taking the minimum means sync() can only
+        # make the bucket more conservative, never less, which is what
+        # makes it safe to call on every response.
         self._tokens = min(self._tokens, remaining)
 
-        # Clamp defensively. A provider bug, a transient negative remaining
-        # count, or a remaining count that -- because two processes
-        # configured the same key with different limits -- exceeds our own
-        # configured capacity, must not corrupt the invariant every other
-        # method relies on: 0 <= _tokens <= capacity. A bucket that reports
-        # available() > capacity would break the router's headroom fraction
-        # (headroom > 1.0). Clamping the lower bound matters just as much
-        # as the upper one -- a negative _tokens would make the next
-        # acquire()'s `deficit = tokens - self._tokens` larger than it
-        # should be, but more importantly would make try_acquire() and
-        # available() report nonsense to callers that assume tokens are >=
-        # 0.
+        # Clamp to [0, capacity] defensively, in case of a provider bug or
+        # two processes sharing a key with different configured limits.
+        # Callers like the router's headroom calculation assume tokens
+        # always fall in this range.
         self._tokens = max(0.0, min(self.capacity, self._tokens))
 
-        # `reset_in` is accepted, and intentionally NOT folded into
-        # `_tokens` or `_last_refill`, because this bucket models a
-        # *continuous* refill (elapsed_seconds * refill_rate), while the
-        # provider's `reset_in` describes a *discrete* fixed window that
-        # jumps back to full capacity at one instant. Those two models
-        # disagree about the shape of the curve between now and the reset
-        # instant, not just its endpoints, so there is no single correct
-        # way to fold a discrete deadline into a continuous rate without
-        # guessing at the provider's internal window algorithm. Scheduling
-        # `_tokens = capacity` at `now + reset_in` (e.g. via a timer, or by
-        # snapping `_last_refill` backward to fake extra elapsed time) was
-        # considered and rejected on two counts: (1) this module is
-        # deliberately timer-free -- see `_refill`'s comment above -- and a
-        # scheduled callback here reintroduces the exact background-task
-        # lifecycle/leak risk lazy refill exists to avoid; (2) faking
-        # elapsed time would fight the min() above the next time sync() is
-        # called mid-window with a smaller `remaining`, since a
-        # forced-full bucket would simply get clamped back down anyway --
-        # the complexity would buy nothing durable. An unused parameter can
-        # look like a bug in review. It isn't one here -- `sync_from_headers`
-        # already has to parse `reset_in` out of the response (Groq/OpenAI-
-        # style headers pair every `-remaining-` with a `-reset-`), and this
-        # keeps that parsed value going somewhere explicit and documented
-        # instead of being silently dropped at the call site, which would
-        # look like the parsing itself was the bug.
+        # `reset_in` is accepted but deliberately not folded into `_tokens`
+        # or `_last_refill`. This bucket models a continuous refill, while
+        # the provider's `reset_in` describes a discrete window that jumps
+        # back to full capacity at one instant -- the two models disagree
+        # about the shape of the curve in between, so there's no clean way
+        # to combine them without guessing at the provider's own algorithm.
+        # It's kept as a parameter anyway because `sync_from_headers`
+        # already has to parse it out of the response, and dropping it
+        # silently here would look like the parsing was the bug.
 
     def throttle(self) -> None:
         """AIMD backoff: halve the refill rate after a rejection (a 429).
@@ -292,15 +223,12 @@ class TokenBucket:
 # header parsing for sync_from_headers
 # ----------------------------------------------------------------------
 
-# Groq (and some gateways) send reset windows as Go-style duration strings
-# -- "7.66s", "2m59.56s", "1h2m3s", "120ms" -- rather than a bare number of
-# seconds. OpenAI sends bare seconds. One regex handles every ordered
-# combination of hours/minutes/seconds/milliseconds, all optional, so a
-# plain "7.66s" and a compound "1h2m3s" both match. Note that "m" (minutes)
-# and "ms" (milliseconds) share a prefix: without the `(?!s)` lookahead
-# after the minutes group, "120ms" would be misparsed as failing to match
-# minutes only by luck of group order; the lookahead makes that explicit
-# and correct instead of accidental.
+# Groq and some other gateways send reset windows as Go-style duration
+# strings ("7.66s", "2m59.56s", "1h2m3s", "120ms") instead of a bare number
+# of seconds like OpenAI does. This regex matches any ordered combination of
+# hours/minutes/seconds/milliseconds, all optional. The `(?!s)` after the
+# minutes group stops "120ms" from being misread, since "m" and "ms" share
+# a prefix.
 _DURATION_RE = re.compile(
     r"^(?:(?P<h>\d+(?:\.\d+)?)h)?"
     r"(?:(?P<m>\d+(?:\.\d+)?)m(?!s))?"
@@ -312,11 +240,9 @@ _DURATION_RE = re.compile(
 def _parse_float(value: str) -> float | None:
     """Best-effort float parse. Returns None instead of raising.
 
-    A header value is untrusted input from a network peer. `float()`
-    raising ValueError/TypeError deep inside a response-handling path is
-    exactly the kind of thing that must never take down a request that
-    otherwise succeeded -- the response body the caller wants is already
-    in hand by the time headers are synced.
+    A header value comes from the network and should never be trusted to
+    parse cleanly; a raised exception here must not take down a response
+    that otherwise succeeded.
     """
     try:
         return float(value.strip())
@@ -327,12 +253,9 @@ def _parse_float(value: str) -> float | None:
 def _parse_duration(value: str) -> float | None:
     """Parse a plain number of seconds OR a Go-style duration string.
 
-    A bare float is tried before the duration regex because plain numeric
-    reset values ("120") are the common case (OpenAI-compatible APIs), and
-    a numeric string like "120" would otherwise also satisfy a
-    loosely-written duration regex as "no unit, therefore zero" --
-    trying float() first avoids that ambiguity entirely rather than
-    special-casing it inside the regex.
+    Tries a bare float first, since a plain numeric value like "120" is the
+    common case (OpenAI-compatible APIs); this also avoids a numeric string
+    being misread by the duration regex as "no unit, so zero".
     """
     try:
         stripped = value.strip()
@@ -344,12 +267,9 @@ def _parse_duration(value: str) -> float | None:
         pass
 
     match = _DURATION_RE.fullmatch(stripped)
-    # `_DURATION_RE` matches the empty string (every group is optional), so
-    # a blank/garbage header would silently parse as "0 seconds" without
-    # the `any(match.groups())` guard below -- indistinguishable from a
-    # provider that legitimately sent "the window resets right now".
-    # Require at least one unit to have actually matched before trusting
-    # the result.
+    # Every group in the regex is optional, so it also matches an empty
+    # string. Require at least one unit to have matched, or a blank/garbage
+    # header would silently parse as "0 seconds".
     if not match or not any(match.groups()):
         return None
 
@@ -383,27 +303,20 @@ class ProviderLimiter:
         # may be spent as a burst, but the sustained rate is the limit.
         self.requests = TokenBucket(rpm_limit, rpm_limit / 60.0, clock=clock, sleep=sleep)
         self.tokens = TokenBucket(tpm_limit, tpm_limit / 60.0, clock=clock, sleep=sleep)
-        # Off by default: existing callers, and every provider that already
-        # sends rate-limit headers, get byte-for-byte the old behaviour.
-        # When on, the request bucket's rate self-adjusts (see on_throttled/
-        # on_success below) for providers that give us no headers to sync
-        # from at all. This is independent of, and simpler than,
-        # sync_from_headers: header sync corrects the token *count*
-        # directly from provider truth, while adaptive mode only ever
-        # nudges the refill *rate*, so the two never fight over the same
-        # number.
+        # Off by default so existing behaviour doesn't change. When on, the
+        # request bucket's rate self-adjusts (see on_throttled/on_success
+        # below) for providers that send no rate-limit headers to sync
+        # from. This never conflicts with sync_from_headers, since that
+        # corrects the token count while adaptive mode only adjusts rate.
         self.adaptive = adaptive
 
     async def acquire(self, n_requests: float = 1.0, n_tokens: float = 0.0) -> None:
-        # Acquire the request bucket first, then the token bucket. Doing it
-        # in a consistent order everywhere is what keeps two buckets from
-        # deadlocking against each other under contention.
+        # Always acquiring the request bucket first, then the token bucket,
+        # keeps the two buckets from deadlocking against each other.
         await self.requests.acquire(n_requests)
         if n_tokens > 0:
-            # A batch can need more tokens than the bucket holds (the
-            # default batch token limit is above some providers' TPM). Such
-            # a call waits for a completely full bucket and takes it all,
-            # rather than failing a batch that would otherwise go through.
+            # A batch can ask for more tokens than the bucket even holds.
+            # Rather than fail it, wait for a full bucket and take it all.
             await self.tokens.acquire(min(n_tokens, self.tokens.capacity))
 
     def on_throttled(self) -> None:
@@ -431,27 +344,16 @@ class ProviderLimiter:
         unqualified `x-ratelimit-remaining` / `x-ratelimit-reset` some
         gateways send when they don't distinguish the two dimensions.
 
-        This is the only place in the module that touches attacker- (or at
-        least peer-) controlled strings. Everywhere else, callers pass
-        floats they already own. A header is text some remote server chose
-        to send, in whatever casing, spelling, and format it likes -- this
-        method's whole job is to turn that into either a valid call to
-        `TokenBucket.sync` or nothing at all.
+        Header text comes straight from the network, in whatever casing or
+        format the remote server likes, so this method's job is to turn
+        that into either a valid call to `TokenBucket.sync` or nothing.
         """
-        # Case-insensitive lookup by building a lowered copy once. HTTP
-        # header names are case-insensitive per RFC 7230, but
-        # `Mapping[str, str]` gives no such guarantee -- an httpx or aiohttp
-        # headers object normalizes this for you, but a plain dict (as
-        # tests, and some hand-rolled adapters, will pass) does not. Doing
-        # this once up front is also simpler than re-scanning per lookup.
-        # This whole method must never raise -- it runs on the response
-        # path of every single call, success or not. A malformed `headers`
-        # argument (not actually a mapping of str->str, e.g. a Mock or a
-        # bytes-keyed dict from a lower-level HTTP client) must degrade to
-        # "nothing synced", not an exception that would take down an
-        # otherwise-successful response. That is why the body is wrapped in
-        # a bare `except Exception` rather than catching only around the
-        # float/duration parsing below.
+        # Header names are case-insensitive per HTTP, but a plain dict (as
+        # tests may pass) doesn't guarantee that the way an httpx/aiohttp
+        # headers object does, so build a lowercased copy once up front.
+        # The whole method must never raise, since it runs on the response
+        # path of every call; a malformed headers argument should just mean
+        # nothing gets synced, not a crash.
         try:
             lowered = {str(k).lower(): v for k, v in headers.items()}
         except Exception:
@@ -464,12 +366,9 @@ class ProviderLimiter:
                     return value
             return None
 
-        # Try the dimension-specific header first, fall back to the
-        # unqualified one. A provider that sends both is telling us the
-        # qualified one is the more precise answer for that dimension; a
-        # provider that sends only the unqualified pair (some gateways
-        # don't separate RPM/TPM) still gets *some* correction instead of
-        # none.
+        # Prefer the dimension-specific header, falling back to the
+        # unqualified one some gateways send when they don't separate
+        # RPM/TPM.
         req_remaining = first("x-ratelimit-remaining-requests", "x-ratelimit-remaining")
         req_reset = first("x-ratelimit-reset-requests", "x-ratelimit-reset")
         tok_remaining = first("x-ratelimit-remaining-tokens", "x-ratelimit-remaining")
@@ -492,12 +391,7 @@ class ProviderLimiter:
                     )
                     self.tokens.sync(remaining, reset_in)
         except Exception:
-            # Unparseable or missing values must be ignored silently, per
-            # spec -- but "unparseable" also covers surprises the
-            # regex/float paths above didn't anticipate (e.g. a header
-            # value that isn't a str at all because a caller passed a
-            # non-conforming mapping). Catching here, not just returning
-            # None from the parsers, is the difference between "this
-            # header is ignored" and "this response handler crashed
-            # because of a header".
+            # Any unparseable or unexpected value (including one that isn't
+            # even a string) is ignored rather than allowed to crash the
+            # response handler.
             return

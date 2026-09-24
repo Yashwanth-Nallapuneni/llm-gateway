@@ -1,8 +1,4 @@
-"""Priority request queue.
-
-Normal comments here -- this module is plumbing, not one of the four
-concepts the project exists to teach.
-"""
+"""Priority request queue."""
 
 from __future__ import annotations
 
@@ -24,19 +20,11 @@ class RequestQueue:
         self._arrival = asyncio.Event()
 
     def put(self, item: QueuedRequest) -> None:
-        # The key is (-priority, seq).
-        #
-        # -priority: heapq is a min-heap, so negating turns it into a max-heap
-        # and higher-priority requests come out first.
-        #
-        # seq: a monotonic counter, and it is doing two jobs. It makes equal
-        # priorities come out in arrival order (FIFO), and -- more subtly -- it
-        # guarantees the tuple comparison never reaches the third element. Two
-        # requests with the same priority would otherwise make heapq compare
-        # QueuedRequest objects, which raises TypeError deep inside heapq with
-        # a traceback that points at the standard library instead of at you.
-        # That failure only shows up under load, when a priority tie finally
-        # happens, which is what makes it confusing in the wild.
+        # Sort key is (-priority, seq). Negating priority turns the min-heap
+        # into a max-heap, so higher priority comes out first. seq breaks
+        # ties in arrival order and also stops heapq from ever comparing two
+        # QueuedRequest objects directly, which would raise a confusing
+        # TypeError on a priority tie.
         heapq.heappush(self._heap, (-item.priority, item.seq, item))
         self._arrival.set()
 
@@ -52,16 +40,10 @@ class RequestQueue:
         """Pop the highest-priority item, waiting up to `timeout` seconds.
 
         Returns None if the timeout expired with the queue still empty.
-
-        ASYNC109 wants callers to wrap the call in `asyncio.timeout()`
-        instead of passing a `timeout` here. That does not fit this method:
-        the deadline has to survive several iterations of the retry loop
-        below (re-checking `pop_nowait()` after each partial wait), and on
-        expiry this returns None rather than raising -- callers such as
-        `batching.py` depend on that to mean "no item arrived in time", not
-        "something failed". Switching to `asyncio.timeout()` would turn a
-        normal, expected outcome into a caught `TimeoutError` at every call
-        site for no behavioural benefit.
+        The `timeout` parameter is kept (instead of asking callers to wrap
+        this in `asyncio.timeout()`) because the deadline must survive
+        several loop iterations here, and callers like `batching.py` rely
+        on a plain None return for "nothing arrived in time".
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
@@ -70,9 +52,9 @@ class RequestQueue:
                 return item
 
             self._arrival.clear()
-            # Re-check after clearing: an item could have arrived between the
-            # pop_nowait() above and the clear(), and clearing would then have
-            # discarded the only wakeup we were going to get.
+            # Check again after clearing: an item could have arrived in the
+            # gap between the check above and this clear(), and clearing
+            # would otherwise throw away the only wakeup signal for it.
             item = self.pop_nowait()
             if item is not None:
                 return item

@@ -20,26 +20,20 @@ class ProviderRouter:
         """Return the name of the unmet hard constraint, or None."""
         caps = provider.capabilities
 
-        # Capability is a HARD constraint, not a preference, and so it is
-        # evaluated before anything else. This is the DeepInfra/Novita
-        # split from the author's eval runs, generalized: one endpoint
-        # returns token logprobs but will not enforce a JSON schema, the
-        # other enforces the schema but drops logprobs. A request that
-        # needs logprobs is not "better served" by a provider without
-        # them -- it is not served at all. Scoring capability as a heavy
-        # penalty instead of a filter would be strictly worse: under
-        # enough load or cost pressure the penalty gets outweighed and the
-        # request silently routes to a provider that cannot satisfy it.
+        # Capability is a hard constraint, checked before anything else. A
+        # request that needs logprobs is not served by a provider without
+        # them, so this must filter candidates out rather than just score
+        # them down -- otherwise, under enough load, the scoring penalty
+        # gets outweighed and the request silently routes somewhere that
+        # can't actually satisfy it.
         if req.needs_logprobs and not caps.supports_logprobs:
             return "needs logprobs, provider does not support them"
         if req.needs_strict_json and not caps.supports_strict_json:
             return "needs strict JSON schema, provider does not support it"
 
-        # The context check must count prompt AND completion, compared
-        # against max_context_tokens. A provider with a 4k window cannot
-        # serve a 3.5k prompt asking for 1k of output -- the failure
-        # arrives mid-generation as a truncated response or a 400, long
-        # after routing has moved on.
+        # Counts prompt tokens plus expected completion tokens, since a
+        # provider can run out of context mid-generation even if the
+        # prompt alone would have fit.
         needed = req.estimated_total_tokens()
         if needed > caps.max_context_tokens:
             return (
@@ -54,28 +48,17 @@ class ProviderRouter:
 
     def _score(self, provider: Provider) -> tuple[int, float, int, str]:
         """Sort key over the survivors. Lower sorts first."""
-        # Headroom dominates cost. A marginally cheaper provider whose
-        # bucket is empty does not save money -- it converts money saved
-        # into seconds of blocking in acquire(), and under a sustained
-        # sweep that is the difference between finishing and not. Cost
-        # only breaks ties between providers that can both take the work
-        # right now. Ranking on cost first instead gives you a stampede
-        # onto the cheapest provider: everything queues on one bucket
-        # while the others sit idle, and the aggregate throughput of the
-        # fleet collapses to that of its cheapest member.
-        #
-        # Headroom is read from the buckets, not from a success counter.
-        # It is a *predictive* signal -- it says the next call will not
-        # block -- whereas error counts are retrospective and only tell
-        # you about limits you have already blown through.
+        # Headroom (how much rate-limit capacity is free) is ranked before
+        # cost. A cheaper provider with an empty bucket doesn't actually
+        # save money -- it just blocks in acquire() -- so ranking on cost
+        # first would stampede all traffic onto the cheapest provider and
+        # leave the others idle.
         headroom = provider.limiter.headroom
 
-        # Bucket the headroom into coarse bands before comparing. Raw
-        # floats make the comparison hyper-sensitive -- 0.81 vs 0.80 is
-        # noise, yet it would deterministically pin all traffic to one
-        # provider and never let cost or priority matter at all. Rounding
-        # to bands means "meaningfully more free" wins, and near-ties fall
-        # through to the cheaper option.
+        # Round headroom into coarse bands before comparing. Comparing raw
+        # floats would treat noise like 0.81 vs 0.80 as a real difference
+        # and pin all traffic to one provider; bands let only a meaningful
+        # gap in headroom win, with cost breaking near-ties.
         band = round(headroom * 10)
 
         cost = provider.blended_cost_per_1k() if self.prefer_cheap else 0.0
@@ -90,8 +73,8 @@ class ProviderRouter:
 
     def select(self, req: LLMRequest, providers: list[Provider]) -> Provider:
         """Choose a provider, or raise NoEligibleProviderError."""
-        # Reasons are accumulated per provider as it is eliminated. This
-        # dict is the entire value of the error path -- see below.
+        # Records why each eliminated provider was rejected, so the error
+        # below can explain itself instead of just saying "none worked".
         reasons: dict[str, str] = {}
         eligible: list[Provider] = []
 
@@ -101,15 +84,11 @@ class ProviderRouter:
                 reasons[provider.name] = miss
                 continue
 
-            # Health is checked after capability but before ranking. A
-            # provider with an open breaker is known-bad right now, so
-            # spending a score on it is wasted -- and, worse, an open
-            # breaker usually means an empty error budget, which makes its
-            # rate-limit headroom look *excellent* precisely because
-            # nothing is getting through. Penalizing unhealthy providers
-            # in the score instead of excluding them would have the same
-            # failure as scoring capability instead of filtering it, and
-            # here the bad signal actively rewards the broken provider.
+            # Checked after capability but before ranking. A provider with
+            # an open circuit breaker is known-bad right now, and since
+            # nothing is getting through it, its rate-limit headroom would
+            # look artificially excellent -- so it must be excluded, not
+            # merely scored down.
             if not provider.breaker.allows_request():
                 reasons[provider.name] = (
                     f"circuit breaker is {provider.breaker.state.value}"
@@ -119,18 +98,12 @@ class ProviderRouter:
             eligible.append(provider)
 
         if not eligible:
-            # The two tempting alternatives here are both worse than
-            # raising. Returning None makes every call site grow a
-            # None-check that someone will forget. Falling back to "the
-            # first provider anyway" is the genuinely dangerous one: the
-            # caller asked for logprobs, gets a well-formed response with
-            # `logprobs=None`, and finds out hours later when the
-            # analysis script divides by a missing field -- by which
-            # point the run is finished and the money is spent. The error
-            # instead names which constraint eliminated which provider,
-            # because "no eligible provider" alone is unactionable. The
-            # operator needs to know whether to raise a limit, fix a key,
-            # or add a capability.
+            # Raising here beats returning None (every caller would need a
+            # forgettable None-check) or silently falling back to the first
+            # provider anyway (which could return a well-formed response
+            # missing a capability the caller actually needed). The error
+            # carries the per-provider reasons so the operator knows whether
+            # to raise a limit, fix a key, or add a capability.
             raise NoEligibleProviderError(reasons)
 
         eligible.sort(key=self._score)
@@ -139,10 +112,9 @@ class ProviderRouter:
     def select_all(self, req: LLMRequest, providers: list[Provider]) -> list[Provider]:
         """Every eligible provider, best first.
 
-        Failover needs the ordered remainder, not just the winner. Calling
-        select() again after a failure would re-run the same scoring and,
-        until the breaker trips, hand back the same provider that just
-        failed.
+        Failover needs the whole ordered list, not just the winner --
+        calling select() again after a failure would just hand back the
+        same provider, since its breaker hasn't tripped yet.
         """
         eligible = [
             p

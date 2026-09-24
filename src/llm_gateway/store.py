@@ -1,15 +1,13 @@
 """Durable, resumable storage for eval sweeps.
 
 `RunStore` sits in front of the gateway and answers one question per
-request: has this exact prompt already been paid for? If yes, hand back the
-stored answer and never touch the network. If no, remember that a call is
-about to be made, then remember what came back -- so that killing the
-process at prompt 14,000 of 20,000 loses at most the one call that was in
-flight at the moment of the kill, not the other 13,999.
+request: has this exact prompt already been paid for? If yes, it hands back
+the stored answer and never touches the network. If no, it records that a
+call is about to be made, then records what came back -- so killing the
+process partway through a large run loses at most the one call that was in
+flight, not everything already done.
 
-Everything here is synchronous sqlite3 wrapped in `asyncio.to_thread`. See
-the "Blocking I/O" section near the bottom of this module for why that is
-the right shape rather than an async sqlite driver.
+Everything here is plain synchronous sqlite3 wrapped in `asyncio.to_thread`.
 """
 
 from __future__ import annotations
@@ -30,24 +28,16 @@ from .types import LLMRequest, LLMResponse
 # Idempotency key
 # --------------------------------------------------------------------------
 #
-# The key is a hash over exactly the fields that determine the answer a
-# provider would give: model, prompt, max_tokens, and the two capability
-# flags (they change what the provider is asked to produce -- logprobs,
-# strict JSON -- so they are part of "the question", not bookkeeping about
-# it).
+# The key is a hash over the fields that determine the answer a provider
+# would give: model, prompt, max_tokens, and the two capability flags.
+# `priority` and `metadata` are left out on purpose, since they never reach
+# the provider and don't affect the answer.
 #
-# `priority` and `metadata` are deliberately excluded. Priority only affects
-# queue ordering inside this process; metadata is caller bookkeeping (a
-# dataset row id, a tag for later filtering) that never reaches the
-# provider. Neither changes what answer comes back.
-#
-# The direct consequence, worth stating plainly: two `LLMRequest`s that are
-# identical in every scored field but differ in priority or metadata will
-# share one cache entry. If a sweep submits the same prompt twice under two
-# different metadata tags expecting two independent provider calls, it gets
-# one call and one answer copied to both -- by design. Give the prompt (or
-# the model/max_tokens/flags) a distinguishing detail if that sharing is not
-# wanted.
+# One consequence worth knowing: two requests identical except for priority
+# or metadata share one cache entry. Submitting the same prompt twice under
+# different metadata tags, expecting two separate calls, gets one call and
+# one answer copied to both. Give the prompt itself a distinguishing detail
+# if that sharing is unwanted.
 
 
 def idempotency_key(request: LLMRequest) -> str:
@@ -93,12 +83,10 @@ class RunStore:
 
     All public methods are `async` and offload the actual sqlite call to a
     worker thread via `asyncio.to_thread`. A single `threading.Lock` guards
-    every access to the connection: sqlite3 connections are not safe to use
-    concurrently from multiple threads, and `to_thread` can and does run
-    overlapping calls on different threads from the default executor. The
-    lock turns every store operation into a short, serialized transaction --
-    correct, and fine for the hundreds-of-milliseconds-apart write rate a
-    provider-bound eval sweep actually produces; it is not meant for a
+    every access to the connection, since sqlite3 connections aren't safe
+    to share across threads and `to_thread` can run calls on different
+    threads. This serializes every store operation, which is fine for the
+    write rate a provider-bound eval sweep produces, but not meant for a
     workload writing thousands of rows per second.
     """
 
@@ -109,31 +97,20 @@ class RunStore:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._lock, self._conn:
-            # WAL lets a reader (e.g. a status query) proceed while a writer
-            # is mid-commit, instead of blocking behind it the way the
-            # default rollback journal would -- useful once a CLI wants to
-            # report progress while the sweep is still writing. It also
-            # survives a killed process better than the rollback journal:
-            # a WAL commit is a single append to the log file, so a crash
-            # either lands before or after that append and there is no
-            # half-written main database file to repair on next open.
+            # WAL mode lets a reader (e.g. a status query) proceed while a
+            # writer is mid-commit, and survives a killed process cleanly:
+            # a commit is one append to the log file, so a crash lands
+            # before or after it with no half-written database to repair.
             self._conn.execute("PRAGMA journal_mode=WAL")
-            # NORMAL still fsyncs at WAL checkpoints, which is what makes a
-            # commit durable against *this process* dying (a `kill -9`, an
-            # unhandled exception) -- the crash scenario this module exists
-            # for. It does not guarantee durability against the OS itself
-            # crashing or the machine losing power between the write and
-            # the checkpoint; FULL would, at the cost of an fsync per
-            # commit. An eval sweep resuming after a killed process is the
-            # scenario in scope here, so NORMAL is the right trade.
+            # NORMAL still fsyncs at checkpoints, enough to survive this
+            # process dying (a kill -9, an unhandled exception), which is
+            # the scenario this module cares about. FULL would also survive
+            # an OS crash or power loss, at the cost of an fsync per commit.
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(_SCHEMA)
-            # Any row still `in_flight` belongs to a previous process. This
-            # process just started, so nothing of its is actually in
-            # flight -- those rows are not "being worked on", they are
-            # abandoned, and must be reclaimed as `pending` so the dispatch
-            # loop below picks them back up instead of waiting forever for
-            # a call that already died with the last process.
+            # Any row still `in_flight` belongs to a previous process that
+            # died before finishing it. Reclaim those rows as `pending` so
+            # the dispatch loop retries them instead of waiting forever.
             self._conn.execute(
                 "UPDATE requests SET status = 'pending', updated_at = ? "
                 "WHERE status = 'in_flight'",
@@ -147,18 +124,15 @@ class RunStore:
     async def get_response(self, key: str) -> LLMResponse | None:
         """Return the stored answer for `key` if it is already `done`.
 
-        This is the resume fast path: callers check this before doing
-        anything else, and a hit means no queueing, no batching, no
-        provider call -- just the answer that was already paid for.
+        This is the resume fast path: a hit means no queueing, no batching,
+        no provider call, just the answer already paid for.
 
-        Replay caveat: at temperature > 0 a provider can return different
-        text for the same prompt on different calls. This method always
-        returns the FIRST answer this store ever received for `key`, never
-        a fresh sample. That is exactly what an eval sweep wants --
-        resuming must not silently change graded outputs -- and exactly
-        wrong for a caller that wants a new sample each time it asks; that
-        caller should not be using a store, or should vary the key (e.g.
-        via the prompt text) itself.
+        This always returns the first answer this store ever received for
+        `key`, never a fresh sample, even though a provider running at
+        temperature > 0 could return different text each time. That is
+        correct for resuming a sweep, since resuming must not change graded
+        outputs; a caller that wants a new sample each time should vary the
+        key itself instead of using a store.
         """
         return await asyncio.to_thread(self._sync_get_response, key)
 
@@ -176,54 +150,35 @@ class RunStore:
     # the crash-safe write path
     # ------------------------------------------------------------------
     #
-    # Reasoning for the ordering below, spelled out once here rather than
-    # at each call site:
+    # A row moves to `done` in exactly one place (`complete`, below), and
+    # only as part of the same statement that writes the response, so a
+    # crash can never leave a row marked done with no response saved.
     #
-    # A row is moved to `done` in exactly one place (`complete`, below),
-    # and only after the response has already been handed to sqlite as
-    # part of that same UPDATE statement's committed transaction. There is
-    # no separate "write the response" step followed later by a "flip the
-    # status" step -- if there were, a crash between them would leave a row
-    # that looks unfinished (good) but has already silently thrown away the
-    # answer it received (bad, and pointless: the whole point of writing it
-    # down was to not have to ask again).
-    #
-    # The window that remains is upstream of this module entirely: between
-    # the provider actually answering and this process calling `complete()`
-    # to persist that answer, the row is still `in_flight`. A crash in that
-    # window means the answer that was on its way here is lost, the row
-    # gets reclaimed as `pending` on the next open, and resume calls the
-    # provider again for it. That is one duplicate call, not a lost result.
-    #
-    # This is deliberate and is the core trade the whole module makes:
-    # losing a result silently is worse than an eval sweep occasionally
-    # paying for one prompt twice, so the ordering is chosen to make
-    # duplication the failure mode instead of loss. This is at-least-once
-    # delivery. Exactly-once is not achievable here (or anywhere a local
-    # commit and a remote, non-transactional API call cannot be made part
-    # of one atomic operation) -- doing so would require the provider
-    # itself to participate in a two-phase commit, which no LLM API offers.
+    # A row can still be lost between the provider actually answering and
+    # `complete()` persisting that answer: a crash there leaves the row
+    # `in_flight`, it gets reclaimed as `pending` on the next open, and
+    # resuming calls the provider again. That means one duplicate call, not
+    # a lost result. This is a deliberate trade: an occasional duplicate
+    # call is preferable to silently losing a result, and getting exactly
+    # one call per result is not possible without the provider itself
+    # participating in the same transaction.
 
     async def reserve(self, request: LLMRequest, key: str) -> LLMResponse | None:
         """Claim `key` for a call about to be made.
 
-        Returns the stored response if another attempt already finished
-        it since the caller's own `get_response` check (a benign race, not
-        an error -- the caller should use this response and skip the call).
-        Returns `None` otherwise, meaning: no finished answer exists, the
-        row is now `in_flight`, and the caller should proceed to call the
-        provider and report back via `complete()` or `fail()`.
+        Returns the stored response if another attempt already finished it
+        since the caller's own `get_response` check -- a benign race, and
+        the caller should just use that response and skip the call. Returns
+        `None` otherwise: the row is now `in_flight`, and the caller should
+        call the provider and report back via `complete()` or `fail()`.
 
-        A row that was `pending`, `failed`, or freshly created all reserve
-        the same way: `failed` is included so a resumed run retries only
-        the prompts that actually failed, not the ones that already
-        succeeded. A row already `in_flight` (a same-process concurrent
-        duplicate of this exact key, submitted before the first attempt
-        finished) is also claimed again rather than made to wait -- this
-        can cause two concurrent provider calls for one key in that narrow
-        case, which is a duplicate call like any other in this at-least-once
-        design, not corruption: whichever `complete()`/`fail()` call lands
-        last simply wins the row.
+        A row that is `pending`, `failed`, or new all reserve the same way;
+        `failed` is included so a resumed run retries prompts that actually
+        failed, not ones that already succeeded. A row already `in_flight`
+        (a concurrent duplicate submission of the same key) is claimed
+        again rather than made to wait, which can cause two concurrent
+        calls for one key -- a duplicate like any other here, not
+        corruption, since whichever call finishes last simply wins the row.
         """
         return await asyncio.to_thread(self._sync_reserve, request, key)
 
@@ -318,10 +273,8 @@ class RunStore:
         await asyncio.to_thread(self._conn.close)
 
     def close(self) -> None:
-        # Synchronous variant: closing a sqlite connection is cheap (no I/O
-        # beyond releasing the file handle) and callers that never entered
-        # an event loop -- e.g. cleanup in a `finally` around a whole CLI
-        # invocation -- need a way to release the file without `await`.
+        # Synchronous variant for callers that never entered an event loop,
+        # e.g. cleanup in a `finally` around a CLI invocation.
         self._conn.close()
 
 
