@@ -1,0 +1,42 @@
+# Changelog
+
+All notable changes to this project are documented in this file, in
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) style.
+
+## [0.2.0] - unreleased
+
+### Added
+
+- OpenRouter adapter validated against the real OpenRouter API (previously
+  only tested against a fake HTTP server). See
+  `docs/LIVE_TESTING.md` for model choice, headers observed and cost.
+- Opt-in adaptive rate limiting (`LLMGateway(..., adaptive=True)`, CLI
+  `--adaptive`): halves the request rate on a 429 and grows it back slowly,
+  for providers such as OpenRouter that send no rate-limit headers to sync
+  against.
+- CLI multi-provider failover: `--provider groq,openrouter` runs several
+  providers under one gateway with the library's existing routing and
+  failover, `--model` accepts `name=value` pairs when more than one
+  provider is given.
+- Per-request timeout: `LLMRequest(timeout_s=...)` and CLI `--timeout`,
+  raising `RequestTimeout` on expiry (covers queueing and retries, not just
+  the network call).
+- `MetricsSink.to_dict()` and CLI `--metrics-json PATH` for a
+  machine-readable metrics snapshot alongside the human-readable report.
+- CLI progress line on stderr during a run, and
+  `examples/timeouts_and_adaptive.py`.
+
+### Fixed
+
+- `OpenRouterClient._raise_for_status` no longer notifies rate-limit headers
+  twice for the same response when mapping a 402 (out-of-credit) error.
+- Live benchmark: a cooldown now applies at every arm boundary, including
+  across runs, and a run cut short by the live-call ceiling is excluded
+  from the summary instead of averaged in.
+
+## [0.1.0] - 2026-09-21
+
+First release. Async gateway with rate limiting, retry with backoff,
+batching, capability-aware routing, a circuit breaker, a durable run store,
+a budget ledger, and a CLI, with Groq and Mock providers and Groq validated
+against the real API.

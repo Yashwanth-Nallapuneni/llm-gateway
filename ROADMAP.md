@@ -14,38 +14,47 @@ released via Trusted Publishing from a tagged GitHub Actions run).
 
 Providers: `MockProvider` (in-process, no network), `GroqProvider` and
 `OpenRouterProvider` (real HTTP adapters with error mapping and
-`Retry-After`/rate-limit-header parsing). Of the two live adapters, only
-Groq has been run against its real API (three times; see
+`Retry-After`/rate-limit-header parsing). Both live adapters have now been
+run against their real APIs: Groq three times (see
 [benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
-all three in full, including two methodology failures kept on record).
-OpenRouter has only ever been exercised against a fake HTTP server in tests,
-never the live API.
+all three in full, including two methodology failures kept on record), and
+OpenRouter once (real completions, logprobs, `require_parameters`
+enforcement, and both a bad-model and a bad-key error path; see
+[docs/LIVE_TESTING.md](docs/LIVE_TESTING.md)). That run also confirmed
+OpenRouter sends no rate-limit headers at all, which is why the gateway now
+also supports opt-in AIMD-style adaptive rate limiting (`adaptive=True` on
+a provider, CLI `--adaptive`): halve the local rate on a 429, grow it back
+slowly on success, for providers that give the limiter nothing to sync
+against.
 
 Other components: a persistent run store (`RunStore`, SQLite-backed, used
 for resuming a crashed sweep and for idempotent replay), a budget ledger
 that reserves worst-case cost and settles on actual usage
 (`BudgetLedger`/`BudgetExceeded`), a circuit breaker, and a CLI
 (`llm-gateway run`) that reads a `.jsonl`/`.txt` file or stdin, supports
-`--dry-run` cost estimation, `--budget`, and `--provider {mock,groq,openrouter}`.
-The simulated benchmark (`benchmarks/bench.py`) compares a naive
+`--dry-run` cost estimation, `--budget`, `--timeout`, `--metrics-json`,
+`--adaptive`, and `--provider {mock,groq,openrouter}` including a
+comma-separated multi-provider list for failover across them. The
+simulated benchmark (`benchmarks/bench.py`) compares a naive
 semaphore-bounded loop against the gateway on a seeded mock server with a
 real enforced rate limit; see [benchmarks/README.md](benchmarks/README.md)
 for the full method and numbers, including the honest reversal on
 latency p99.
 
+The live A/B methodology gap flagged in earlier drafts of this document is
+now closed: attempt 4 (see
+[benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api))
+applies the 90s cooldown before every arm, including across run
+boundaries, and sizes `--max-live-calls` to the worst case so no arm can be
+silently truncated. Across 3 runs of 40 prompts per arm, the gateway
+succeeded on 120/120 prompts (100%, 0 rate-limit rejections, ~31s/run)
+against naive's 107/120 (97.5%, 85.0%, 85.0% per run, 87 real 429s,
+~7-10s/run) -- the gateway trades wall-clock time for zero dropped
+prompts, which does not reproduce the simulated benchmark's wall-clock win
+and is not meant to.
+
 ## Not yet done
 
-- **OpenRouter has never been exercised against the live API.** All
-  OpenRouter coverage today is unit tests against a fake HTTP server.
-- **Clean live A/B methodology.** The one clean live comparison (Groq, run
-  1) is uncontaminated, but a documented residual confound remains: a
-  90-second cooldown is applied only *between arms within a run*, not
-  between one run's last arm and the next run's first arm, so account
-  rate-limit state can carry across run boundaries (this is what happened
-  to run 2's gateway arm). The fix is either separate API keys per arm, or
-  a cooldown enforced at every arm boundary including across runs, plus a
-  `--max-live-calls` ceiling generous enough that no arm can be truncated
-  mid-run (run 2's naive arm was cut short this way, not by real rejections).
 - **`ruff format` not enforced in CI.** `.github/workflows/ci.yml` runs
   `ruff check` but not `ruff format --check`; the comment there explains
   that turning it on today would reformat about ten files with no
@@ -55,21 +64,12 @@ latency p99.
 
 Ranked by expected value, effort estimates from the original research pass:
 
-1. **OpenRouter live coverage**: run the adapter against the real
-   OpenRouter API at least once, the same way Groq was validated, and fix
-   whatever that exposes. This is the most direct way to close the gap
-   called out above.
-2. **Provider Batch API offload** (12-16h): route eligible requests to a
+1. **Provider Batch API offload** (12-16h): route eligible requests to a
    provider's async, file-based batch endpoint (roughly half price, 24h
    turnaround window) when the caller's deadline allows it. Depends on the
    durable run store for tracking batch job IDs across process restarts,
    which now exists (`RunStore`).
-3. **AIMD adaptive limiting** (6-10h): when a provider gives no rate-limit
-   headers to sync against, back off multiplicatively on rejection and
-   grow additively on success, the same pattern used by TCP congestion
-   control, Google SRE client-side throttling and Netflix's
-   concurrency-limits library.
-4. **`inspect_ai` `ModelAPI` adapter** (6-10h): worth building only if this
+2. **`inspect_ai` `ModelAPI` adapter** (6-10h): worth building only if this
    gateway is used to drive `inspect_ai` evals; otherwise skip.
 
 ## Deliberately not doing

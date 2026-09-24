@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aiollm-gateway"
-version = "0.1.0"
+version = "0.2.0"
 description = "Rate-limited, batching, failover-capable async client layer for LLM APIs"
 readme = "README.md"
 requires-python = ">=3.11"

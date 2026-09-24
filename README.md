@@ -78,8 +78,32 @@ prints to stderr unless `--no-metrics`. `--budget USD` caps total spend for the
 run: once committed spend would cross it, further prompts fail fast with a
 budget-exceeded error instead of being sent to a provider -- results already
 obtained are still written out in full, and the run exits non-zero with a
-count of how many prompts were skipped. See `llm-gateway run --help` for the
-full option list.
+count of how many prompts were skipped. A progress line is written to
+stderr as the run goes, unless `--quiet`. See `llm-gateway run --help` for
+the full option list.
+
+`--provider` also accepts a comma-separated priority list, e.g. `--provider
+groq,openrouter`, which runs several providers under one gateway using the
+library's own capability-filtered routing and failover. With more than one
+provider, `--model` takes `name=value` pairs instead of a single value,
+e.g. `--model groq=allam-2-7b,openrouter=meta-llama/llama-3.1-8b-instruct`.
+
+`--timeout SECONDS` sets a per-prompt timeout covering queueing and
+retries, not just the network call; a prompt that exceeds it fails with a
+timeout error instead of hanging the run (`LLMRequest(timeout_s=...)` from
+Python). `--metrics-json PATH` writes a machine-readable snapshot of the
+run's metrics (`MetricsSink.to_dict()`) alongside the usual human-readable
+report.
+
+### Adaptive rate limiting
+
+`--adaptive` (or `LLMGateway(..., adaptive=True)` from Python) is for
+providers that send no rate-limit headers to sync against, such as
+OpenRouter: on a 429 it halves the local request rate, then grows it back
+slowly on success, instead of trusting a fixed configured limit for the
+life of the run. It is opt-in and does nothing for a provider like Groq
+that already syncs its buckets from real response headers. See
+`examples/timeouts_and_adaptive.py`.
 
 ## Resuming a crashed sweep
 
@@ -125,9 +149,14 @@ limit, do not add it.
 ## Status
 
 The core is complete, tested and typed, and adapters for Groq and OpenRouter
-are implemented and unit-tested against a fake HTTP server. The Groq adapter
-has now run against the real Groq API three times (`benchmarks/bench.py
---provider groq`; see
+are implemented and unit-tested against a fake HTTP server. Both adapters
+have also been run against their real APIs. OpenRouter was validated live
+once, against real completions, logprobs, and both a bad-model and a
+bad-key error path; it also confirmed OpenRouter sends no rate-limit
+headers, which is why the adaptive rate limiter above exists. See
+`docs/LIVE_TESTING.md` for the full breakdown and cost (about $0.0045). The
+Groq adapter has now run against the real Groq API three times
+(`benchmarks/bench.py --provider groq`; see
 [benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
 all three runs in full): real HTTP calls, real 429/`Retry-After` handling,
 real token usage, no simulation involved, every time. The first two attempts
@@ -141,33 +170,34 @@ leftover 429s that weren't its own doing. Neither attempt found a defect in
 the library itself: every 429 was correctly detected and retried both
 times.
 
-A third, corrected attempt (a 90s cooldown between arms, arm order
-alternated across runs, 2 runs of 40 prompts each, 185 live calls, $0 on
-the free tier) fixed both problems. The clean, uncontaminated result is
-run 1: naive succeeded on 33/40 prompts (**82.5%**, 7 genuine failures
-after 34 real 429s), while the gateway succeeded on 40/40 (**100%, 0
-rejections**), at a real, disclosed cost of 32.5s vs 7.4s wall-clock,
-because it paces itself under the account's real ~5500 tokens/min ceiling
-instead of bursting and eating rejections the way the naive loop does;
-this live run does **not** reproduce the simulated benchmark's wall-clock
-advantage. Run 2's naive arm is **not** a second data point for this
-comparison: it stopped after 23 of an expected ~40+ requests because this
-task's `--max-live-calls 185` budget ran out mid-arm, and its 17 recorded
-"failures" are the harness refusing further calls
-(`LiveCallBudgetExceeded`), not real rate-limit rejections. That arm
-never got to attempt 17 of its prompts. An earlier version of this section
-quoted that 57.5%-success figure as a real result; it wasn't, and the
-mistake has been corrected here. Run 2's gateway arm did complete cleanly
-but took 15 real 429s (still reaching 100% success via retry) because the
-account's rate-limit state carried over from run 1: the 90s cooldown
-only applies *between arms within a run*, not between one run's last arm
-and the next run's first arm, a genuine remaining limitation of this
-harness. Read
+A third attempt (90s cooldown between arms, arm order alternated across
+runs, 2 runs of 40 prompts each) fixed both earlier problems but left one
+gap: the cooldown only applied *between arms within a run*, not between one
+run's last arm and the next run's first arm, so account rate-limit state
+could carry across run boundaries. Run 2's gateway arm absorbed 15 real
+429s from run 1's leftover state as a result, and its naive arm's "17
+failures" were actually the harness's own `--max-live-calls` budget running
+out mid-arm, not real rejections -- an earlier version of this section
+quoted that as a 57.5% success figure; it wasn't a real result, and the
+mistake has been corrected here (never cite it).
+
+The current, headline result is **attempt 4**, which fixes that gap: a 90s
+cooldown before *every* arm, including across run boundaries, 3 runs of 40
+prompts per arm, arm order alternated, $0 on the free tier. Across the 3
+runs, the gateway succeeded on **120/120 prompts (100%, 0 rate-limit
+rejections)**, at roughly 31s per run; naive succeeded on 107/120
+(**97.5%, 85.0%, 85.0%** per run) with 87 real 429s total, at roughly
+7-10s per run. The gateway is slower and that is the honest tradeoff shown
+here: it paces itself under the account's real rate ceiling instead of
+bursting and eating rejections the way the naive loop does, so it trades
+wall-clock time for zero dropped prompts. This does **not** reproduce the
+simulated benchmark's wall-clock win above, and it does not need to --
+the two measure different things. Read
 [benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
-the full breakdown, both earlier attempts in full, and every caveat before
-citing any of these numbers. Broader real-endpoint coverage (more
-providers, more models, tighter live variance) is the next milestone. See
-[ROADMAP.md](ROADMAP.md).
+the full breakdown of all four attempts, including the two earlier
+methodology failures and the retracted figure, before citing any of these
+numbers. Broader real-endpoint coverage (more providers, more models) is
+the next milestone. See [ROADMAP.md](ROADMAP.md).
 
 ## The problem
 
@@ -321,7 +351,7 @@ phase 3: primary recovers, breaker half-opens and closes
 
 Client-side gateway only. A run-wide spending ceiling (`BudgetLedger`,
 `--budget`) is supported, but routing itself is not cost-aware beyond the
-existing headroom-then-cost tiebreak. Not implemented, on purpose: streaming
-(in fundamental tension with batching), a persistent queue that survives a
-crash, and adaptive rate limiting that
-infers the real limit from observed `429`s rather than trusting configuration.
+existing headroom-then-cost tiebreak. Adaptive rate limiting (see above) is
+opt-in and additive to the header-synced limiter, not a replacement for it.
+Not implemented, on purpose: streaming (in fundamental tension with
+batching) and a persistent queue that survives a crash.
