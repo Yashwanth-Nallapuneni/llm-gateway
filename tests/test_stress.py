@@ -144,3 +144,49 @@ async def test_closing_mid_run_resolves_every_caller(tmp_path: Path, seed: int) 
     counts = await store.counts()
     assert counts.get("in_flight", 0) == 0
     await store.aclose()
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+async def test_budget_runs_out_and_capabilities_are_mixed(
+    tmp_path: Path, seed: int
+) -> None:
+    # A small budget that runs out partway, and some requests that need
+    # logprobs, which only one provider offers. Every caller must still get
+    # an answer or an error, and no budget hold may be left behind.
+    rng = random.Random(seed)
+    plain = make_providers(rng)
+    with_logprobs = MockProvider(
+        "logprob",
+        supports_logprobs=True,
+        client=MockClient(name="logprob", supports_logprobs=True, latency=0.001),
+    )
+    budget = BudgetLedger(0.05)
+    store = RunStore(tmp_path / f"budget-{seed}.db")
+    gw = LLMGateway(
+        providers=[*plain, with_logprobs], retry=fast_retry(), budget=budget, store=store
+    )
+
+    async def submit_one(i: int) -> object:
+        req = LLMRequest(f"prompt-{i}", needs_logprobs=rng.random() < 0.3)
+        try:
+            return await gw.submit(req)
+        except (ProviderError, GatewayError, BudgetExceeded) as exc:
+            return exc
+
+    async with gw:
+        results = await asyncio.wait_for(
+            asyncio.gather(*(submit_one(i) for i in range(N_REQUESTS))),
+            timeout=OVERALL_TIMEOUT,
+        )
+        for _ in range(20):
+            if budget.outstanding_count == 0:
+                break
+            await asyncio.sleep(0.05)
+
+    assert len(results) == N_REQUESTS
+    assert any(isinstance(r, BudgetExceeded) for r in results)
+    assert any(isinstance(r, LLMResponse) for r in results)
+    assert budget.outstanding_count == 0
+    counts = await store.counts()
+    assert counts.get("in_flight", 0) == 0
+    await store.aclose()
