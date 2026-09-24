@@ -183,6 +183,21 @@ class LiveCallBudgetExceeded(RuntimeError):
     """
 
 
+def _is_budget_exceeded(exc: BaseException) -> bool:
+    """True if `exc` is, or was caused/raised-from, a LiveCallBudgetExceeded
+    -- checked by walking __cause__/__context__ since RetryPolicy and the
+    gateway's own error handling may wrap the original exception rather than
+    re-raising it bare."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, LiveCallBudgetExceeded):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
 class LiveCallBudget:
     """Shared across every arm and every run of one live invocation.
 
@@ -334,6 +349,15 @@ class RunResult:
     # the only real measure of "how much work this arm actually did."
     input_tokens: int = 0
     output_tokens: int = 0
+    # Set when this arm was cut off mid-run by --max-live-calls
+    # (LiveCallBudgetExceeded) rather than completing on its own. An invalid
+    # run's successes/failures/429s are not a measurement of the client under
+    # test -- they're an artifact of the harness refusing to place calls it
+    # had no budget left for -- so callers must exclude it from any reported
+    # summary rather than averaging it in. See the retracted "57.5%" figure
+    # in benchmarks/README.md for what happens when this isn't done.
+    invalid: bool = False
+    invalid_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -357,9 +381,10 @@ async def run_naive(
     input_tokens = 0
     output_tokens = 0
     clock = time.monotonic
+    budget_exceeded = False
 
     async def one(req: LLMRequest) -> None:
-        nonlocal failures, cost, input_tokens, output_tokens
+        nonlocal failures, cost, input_tokens, output_tokens, budget_exceeded
         start = clock()
         attempt = 0
         while True:
@@ -371,6 +396,12 @@ async def run_naive(
                 async with sem:
                     resp = await server.complete(req)
             except Exception as exc:
+                if _is_budget_exceeded(exc):
+                    # Not a real rejection: the harness itself refused to
+                    # place this call. Flag the whole arm invalid rather
+                    # than letting it masquerade as a failed prompt -- see
+                    # RunResult.invalid.
+                    budget_exceeded = True
                 if not retry.should_retry(exc, attempt):
                     failures += 1
                     return
@@ -401,6 +432,13 @@ async def run_naive(
         cost_usd=cost,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        invalid=budget_exceeded,
+        invalid_reason=(
+            "hit --max-live-calls mid-arm (LiveCallBudgetExceeded) -- not a "
+            "real measurement of this arm's success/failure/429 rate"
+        )
+        if budget_exceeded
+        else "",
     )
 
 
@@ -476,6 +514,10 @@ async def run_gateway(
     )
     input_tokens = sum(r.input_tokens for r in results if isinstance(r, LLMResponse))
     output_tokens = sum(r.output_tokens for r in results if isinstance(r, LLMResponse))
+    # Same reasoning as run_naive: a LiveCallBudgetExceeded anywhere in this
+    # arm's results means the harness cut it off mid-run, not that the
+    # gateway actually failed those prompts.
+    budget_exceeded = any(_is_budget_exceeded(r) for r in results if isinstance(r, BaseException))
 
     m = server.server_metrics
     return RunResult(
@@ -490,6 +532,13 @@ async def run_gateway(
         cost_usd=cost,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        invalid=budget_exceeded,
+        invalid_reason=(
+            "hit --max-live-calls mid-arm (LiveCallBudgetExceeded) -- not a "
+            "real measurement of this arm's success/failure/429 rate"
+        )
+        if budget_exceeded
+        else "",
     )
 
 
@@ -546,6 +595,29 @@ METRIC_ORDER: list[tuple[str, str, str]] = [
 ]
 
 
+def valid_runs(runs: list[RunResult], label: str) -> list[RunResult]:
+    """Drop any run cut off mid-arm by --max-live-calls (RunResult.invalid)
+    before it reaches summarize(). The refuse-to-start check in
+    run_all_live sizes --max-live-calls so this should never trigger, but
+    summarize() must not silently average a harness artifact into a real
+    result if it somehow does -- that is exactly how the retracted '57.5%'
+    figure happened."""
+    ok = [r for r in runs if not r.invalid]
+    dropped = len(runs) - len(ok)
+    if dropped:
+        print(
+            f"WARNING: dropping {dropped}/{len(runs)} {label} run(s), cut off "
+            "mid-arm by --max-live-calls -- not a real result, see RunResult.invalid",
+            flush=True,
+        )
+    if not ok:
+        raise SystemExit(
+            f"every {label} run was cut off mid-arm by --max-live-calls; nothing "
+            "valid to report. Raise --max-live-calls and rerun."
+        )
+    return ok
+
+
 def summarize(runs: list[RunResult], n_prompts: int) -> dict[str, dict[str, float]]:
     """Median and p5-p95 of each metric, across runs -- never a single run."""
     per_run = [run_scalars(r, n_prompts) for r in runs]
@@ -586,13 +658,30 @@ def arm_order_for_run(run_index: int, arm_order: str) -> tuple[str, str]:
 
 
 async def _cooldown(seconds: float, *, from_label: str, to_label: str) -> None:
+    """Sleep between two arm executions, or before the very first one
+    (`from_label="start"`).
+
+    Applied at EVERY arm boundary -- including the boundary between one
+    run's last arm and the next run's first arm, not just between the two
+    arms inside a single run. A cooldown that only fires within a run lets a
+    shared account's rate-limit state carry from one run into the next
+    (documented in benchmarks/README.md, "Live results," as the residual
+    confound behind run 2's gateway arm picking up 15 real 429s it should
+    not have)."""
     if seconds <= 0:
         return
-    print(
-        f"  cooling down {seconds:.0f}s between {from_label} and {to_label} arms "
-        "(letting the account's rate-limit bucket refill -- not hung)...",
-        flush=True,
-    )
+    if from_label == "start":
+        print(
+            f"waiting out a {seconds:.0f}s cooldown before the first arm, so the "
+            "account starts this invocation with a full token bucket (not hung)...",
+            flush=True,
+        )
+    else:
+        print(
+            f"  cooling down {seconds:.0f}s between {from_label} and {to_label} arms "
+            "(letting the account's rate-limit bucket refill -- not hung)...",
+            flush=True,
+        )
     await asyncio.sleep(seconds)
 
 
@@ -622,6 +711,7 @@ async def run_all_sim(args: argparse.Namespace) -> dict[str, Any]:
     gateway_runs: list[RunResult] = []
     cooldown_s = getattr(args, "arm_cooldown", 0.0) or 0.0
     arm_order = getattr(args, "arm_order", "alternate")
+    prev_label = "start"
 
     for run_index, rs in enumerate(run_seeds):
 
@@ -684,9 +774,15 @@ async def run_all_sim(args: argparse.Namespace) -> dict[str, Any]:
         runners = {"naive": (do_naive, naive_runs), "gateway": (do_gateway, gateway_runs)}
         first_fn, first_list = runners[first]
         second_fn, second_list = runners[second]
+        # Cooldown before EVERY arm, including the first arm of run 0
+        # (from_label="start", a no-op unless --arm-cooldown is set) and the
+        # first arm of every run after the first -- not just between the two
+        # arms inside one run.
+        await _cooldown(cooldown_s, from_label=prev_label, to_label=first)
         first_list.append(await first_fn())
         await _cooldown(cooldown_s, from_label=first, to_label=second)
         second_list.append(await second_fn())
+        prev_label = second
 
     return {
         "n_prompts": len(prompts),
@@ -708,15 +804,31 @@ async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
             "  GROQ_API_KEY=$(cat ~/.groq_key) python3 benchmarks/bench.py --provider groq ..."
         )
 
-    planned_calls = args.n_prompts * args.runs * 2  # 2 arms, before any retries
     max_live_calls = args.max_live_calls
-    if planned_calls > max_live_calls:
+    # Worst case, not expected case: every prompt in every arm of every run
+    # exhausts its full retry budget (--max-attempts calls each) before
+    # succeeding or giving up. This is deliberately pessimistic -- a
+    # ceiling sized to the *expected* call count is exactly what let
+    # --max-live-calls truncate an arm mid-run in an earlier attempt (see
+    # benchmarks/README.md's retracted "57.5%" figure): the harness cut the
+    # arm off, and the harness's own refusal was then misread as a real
+    # rate-limit failure. Refusing to start unless the ceiling comfortably
+    # covers the worst case makes that class of truncation impossible,
+    # rather than merely making it visible after the fact.
+    worst_case_calls = args.n_prompts * args.runs * 2 * args.max_attempts
+    planned_calls = args.n_prompts * args.runs * 2  # 2 arms, no retries, for the message below
+    if worst_case_calls > max_live_calls:
         raise SystemExit(
-            f"refusing to run live: --n-prompts {args.n_prompts} * --runs {args.runs} * "
-            f"2 arms = {planned_calls} planned calls, above --max-live-calls "
-            f"{max_live_calls}. Lower --n-prompts/--runs or raise --max-live-calls "
-            "deliberately -- this ceiling exists so a typo can't fire tens of "
-            "thousands of requests at a real provider."
+            f"refusing to run live: worst case is --n-prompts {args.n_prompts} * "
+            f"--runs {args.runs} * 2 arms * --max-attempts {args.max_attempts} = "
+            f"{worst_case_calls} calls (every prompt exhausting its retry budget), "
+            f"above --max-live-calls {max_live_calls}. The best case is "
+            f"{planned_calls} calls (no retries at all), but sizing the ceiling to "
+            "the best case is what let a real arm get truncated mid-run in an "
+            "earlier attempt -- see benchmarks/README.md's retracted '57.5%' "
+            "figure. Lower --n-prompts/--runs/--max-attempts or raise "
+            "--max-live-calls deliberately so no arm can hit the ceiling before "
+            "it finishes on its own."
         )
 
     prompts = make_prompts(
@@ -733,14 +845,7 @@ async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
     live_clients: list[Any] = []
     cooldown_s = getattr(args, "arm_cooldown", 90.0) or 0.0
     arm_order = getattr(args, "arm_order", "alternate")
-
-    if cooldown_s > 0:
-        print(
-            f"waiting out a {cooldown_s:.0f}s cooldown before the first arm, so the "
-            "account starts this invocation with a full token bucket (not hung)...",
-            flush=True,
-        )
-        await asyncio.sleep(cooldown_s)
+    prev_label = "start"
 
     try:
         for run_index in range(args.runs):
@@ -808,9 +913,18 @@ async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
             first_fn, first_list = runners[first]
             second_fn, second_list = runners[second]
             print(f"run {run_index + 1}/{args.runs}: {first} arm first this time", flush=True)
+            # Cooldown before EVERY arm, including this run's first arm --
+            # whether that's the very first arm of the whole invocation
+            # (prev_label="start") or the arm right after the previous run's
+            # last arm. This is the actual fix for the documented confound:
+            # previously the cooldown only ran between the two arms inside
+            # one run, so a run's last arm and the next run's first arm ran
+            # back-to-back and could share leftover rate-limit state.
+            await _cooldown(cooldown_s, from_label=prev_label, to_label=first)
             first_list.append(await first_fn())
             await _cooldown(cooldown_s, from_label=first, to_label=second)
             second_list.append(await second_fn())
+            prev_label = second
     finally:
         for c in live_clients:
             await c.aclose()
@@ -1034,15 +1148,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm-cooldown",
         type=float,
         default=None,
-        help="seconds to sleep BETWEEN the two arms (after the first arm of "
-        "a run finishes, before the second starts), so a shared account's "
-        "rate-limit bucket can refill before the second arm inherits "
-        "whatever the first one used. Default: 0 for --provider sim (the "
-        "simulated server gives each arm its own independent SimClient, so "
-        "there's no shared state to let refill), 90 for --provider groq "
-        "(both arms share one real account/token bucket back-to-back "
-        "otherwise -- see benchmarks/README.md's 'Live results' for what "
-        "happens without this). Pass explicitly to override either default.",
+        help="seconds to sleep before EVERY arm -- before the first arm of "
+        "the whole invocation, between the two arms inside a run, and "
+        "between one run's last arm and the next run's first arm -- so a "
+        "shared account's rate-limit bucket can refill before the next arm "
+        "inherits whatever the previous one used. Applying this only "
+        "within a run (not across runs too) was a documented confound in "
+        "an earlier live attempt -- see benchmarks/README.md's 'Live "
+        "results'. Default: 0 for --provider sim (the simulated server "
+        "gives each arm its own independent SimClient, so there's no "
+        "shared state to let refill), 90 for --provider groq (all arms "
+        "share one real account/token bucket otherwise). Pass explicitly "
+        "to override either default.",
     )
     p.add_argument(
         "--arm-order",
@@ -1127,8 +1244,10 @@ def main(argv: list[str] | None = None) -> int:
     print(LIVE_EXPECTATION if live else EXPECTATION)
 
     result = asyncio.run(run_all(args))
-    naive_summary = summarize(result["naive"], result["n_prompts"])
-    gateway_summary = summarize(result["gateway"], result["n_prompts"])
+    naive_ok = valid_runs(result["naive"], "naive")
+    gateway_ok = valid_runs(result["gateway"], "gateway")
+    naive_summary = summarize(naive_ok, result["n_prompts"])
+    gateway_summary = summarize(gateway_ok, result["n_prompts"])
 
     print(render_table(naive_summary, gateway_summary, result["n_prompts"], args.runs))
 

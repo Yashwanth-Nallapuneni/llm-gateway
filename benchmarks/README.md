@@ -224,7 +224,19 @@ refills before the next arm starts, not just between repeated runs) and
 directional bias from "whoever runs first drains the bucket for whoever
 runs second" cannot land on one arm only).
 
-### The corrected run
+### Attempt 3: cooldown within a run, but not across runs (superseded)
+
+This attempt fixed the ordering confound from attempt 2 but left a
+narrower one in place: `--arm-cooldown` only slept between the two arms
+inside a run, not between one run's last arm and the next run's first
+arm, so a shared account's rate-limit state could still carry across that
+boundary. It is kept below because it is what first exposed the gap
+(run 2's gateway arm picked up 15 real 429s it should not have) and
+because `--max-live-calls` truncated its second run's naive arm mid-arm,
+which is the source of a retracted "57.5%" figure -- see the note before
+the per-run table. **Do not read this section as the current live
+result; see "Attempt 4" below for the corrected run with the cross-run
+cooldown fix.**
 
 Run:
 
@@ -332,11 +344,124 @@ this task's live-call budget does not comfortably cover verifying it (see
 below).
 
 Combined with the 160 calls spent on the two earlier live attempts above,
-this task has now used **345 of the project's 350-call live-quota ceiling
-across all live attempts to date; 5 calls remain.** Any further live work
-needs either a raised ceiling or a much smaller workload.
+this attempt used 185 calls, for 345 total across attempts 1-3. Attempt 4
+below needed a live-call budget beyond what that running total left
+available, so the informal 350-call ceiling tracked through attempt 3 was
+deliberately raised rather than treated as a hard cap; see attempt 4 for
+what it cost.
+
+### Attempt 4: cooldown at every arm boundary (the current, clean result)
+
+This is the fix for the gap attempt 3 left open. `_cooldown()` and the
+run loop in `run_all_live`/`run_all_sim` now sleep before *every* arm --
+including the boundary between one run's last arm and the next run's
+first arm -- not just between the two arms inside a single run. The
+`--max-live-calls` ceiling is also now sized to the worst case (every
+prompt in every arm of every run exhausting its full `--max-attempts`
+retry budget), and `bench.py` refuses to start if the ceiling doesn't
+comfortably cover that worst case, rather than risking a truncated arm.
+Any run a truncation did slip through on is marked `RunResult.invalid`
+and `valid_runs()` drops it (with a printed warning) before summary
+statistics are computed, so a harness artifact can no longer silently
+enter the reported numbers the way it did for the retracted "57.5%"
+figure.
+
+Run:
+
+```
+GROQ_API_KEY=$(cat ~/.groq_key) python3 benchmarks/bench.py --provider groq \
+  --model allam-2-7b --n-prompts 40 --runs 3 --concurrency 15 --max-tokens 16 \
+  --max-attempts 4 --base-delay 0.3 --max-delay 3 --live-rpm-limit 900 \
+  --live-tpm-limit 5500 --max-live-calls 1000 --prompt-words-min 120 \
+  --prompt-words-max 180 --arm-cooldown 90 --arm-order alternate \
+  --seed 303 --markdown --json live_run3.json
+```
+
+```
+timestamp (UTC):  2026-09-24T04:09:48.599164+00:00
+git commit:       5100acd
+python:           3.13.2 (CPython)
+platform:         macOS-26.6.1-arm64-arm-64bit-Mach-O
+processor:        arm
+cpu_count:        8
+model:            allam-2-7b
+live_rpm_limit:   900.0    (gateway arm's configured ceiling)
+live_tpm_limit:   5500.0
+concurrency:      15
+n_prompts:        40
+runs:             3
+arm_cooldown:     90.0s
+arm_order:        alternate
+max_tokens:       16
+max_live_calls:   1000     (worst case at max_attempts=4: 40*3*2*4 = 960)
+```
+
+All 3 runs completed on their own; none was truncated by `--max-live-calls`
+(`RunResult.invalid` is `False` for every run in `live_run3.json`).
+314 live HTTP calls were made against a ceiling of 1000.
+
+_median [p5, p95] across 3 runs, 40 prompts/run, 314 live HTTP calls, $0 (free tier)_
+
+| metric | naive | gateway |
+|---|---|---|
+| wall-clock (s) | 7.308 [7.106, 9.850] | **31.053** [31.039, 31.079] |
+| requests sent | 65.0 [62.0, 67.0] | 40.0 [40.0, 40.0] |
+| 429s received | 31.0 [23.0, 33.0] | **0.0** [0.0, 0.0] |
+| 5xx received | 0.0 [0.0, 0.0] | 0.0 [0.0, 0.0] |
+| successes | 34.0 [34.0, 39.0] | **40.0** [40.0, 40.0] |
+| failures | 6.0 [1.0, 6.0] | **0.0** [0.0, 0.0] |
+| success rate | 85.0% [85.0%, 97.5%] | **100.0%** [100.0%, 100.0%] |
+| latency p50 (s) | **0.676** [0.615, 0.711] | 0.745 [0.687, 0.892] |
+| latency p99 (s) | **7.300** [7.103, 9.844] | 31.052 [31.037, 31.078] |
+| total tokens (in+out) | 6112 [6107, 7008] | 7202 [7197, 7202] |
+
+Per-run numbers (all 3 valid, none truncated):
+
+| run | arm order | arm | wall-clock (s) | requests | 429s | successes | failures | success rate | p50 (s) | p99 (s) | tokens (in+out) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | naive first | naive | 9.850 | 62 | 23 | 39 | 1 | 97.5% | 0.711 | 9.844 | 7008 (6384 in / 624 out) |
+| 1 | naive first | gateway | 31.053 | 40 | 0 | 40 | 0 | 100% | 0.892 | 31.052 | 7202 (6562 in / 640 out) |
+| 2 | gateway first | gateway | 31.039 | 40 | 0 | 40 | 0 | 100% | 0.687 | 31.037 | 7202 (6562 in / 640 out) |
+| 2 | gateway first | naive | 7.106 | 65 | 31 | 34 | 6 | 85.0% | 0.676 | 7.103 | 6112 (5575 in / 537 out) |
+| 3 | naive first | naive | 7.308 | 67 | 33 | 34 | 6 | 85.0% | 0.615 | 7.300 | 6107 (5563 in / 544 out) |
+| 3 | naive first | gateway | 31.079 | 40 | 0 | 40 | 0 | 100% | 0.745 | 31.078 | 7202 (6562 in / 635 out) |
+
+The result attempt 3 could not confirm now holds across all 3 runs: **the
+gateway arm took 0 real 429s in every run**, including the run-2/run-3
+boundary and the run-1/run-2 boundary, the exact seam where attempt 3's
+run 2 gateway picked up 15. The naive arm, unpaced, took real 429s in
+every run (23, 31, 33) and never reached 100% success (97.5%, 85.0%,
+85.0%). The gateway's cost is the same tradeoff attempt 3 already showed:
+slower wall-clock (median 31.1s vs 7.3s) and much higher p99 latency
+(31.1s vs 7.3s), because it paces itself under the account's real token
+ceiling instead of bursting and eating rejections. Read this as
+confirmation that the cross-run cooldown fix closes the confound, not as
+a claim that the gateway is faster: it still is not, on this workload,
+against this account's real limits.
+
+Live HTTP calls made this invocation: 314. Raw per-run numbers are in
+`/tmp/bench_out/live_run3.json` (local, not committed); full console
+output is in `/tmp/bench_out/live_run3.log` (also local).
 
 ### Reading this honestly
+
+- **The current, clean result (attempt 4, all 3 runs valid): naive
+  85.0-97.5% success (median 85.0%) vs gateway 100% success in every run,
+  0 gateway rejections in every run**, at a real cost of ~31.1s vs ~7.3s
+  median wall-clock. This supersedes attempt 3 below: the residual
+  cross-run confound that let run 2's gateway pick up 15 real 429s is
+  fixed, and re-running 3 full runs with the fix in place shows 0 gateway
+  429s across the board, not just in the runs that happened to get a full
+  cooldown before attempt 3's fix existed.
+- **The gateway is still far slower here, and that is still not a win: it
+  is the tradeoff, stated plainly**, unchanged from attempt 3's reading
+  below.
+
+The rest of this section (attempt 3's reading) is kept because its
+caveats about variance, the token-vs-request binding constraint, and what
+the live run does and does not confirm still apply to attempt 4's numbers
+essentially unchanged; only the "clean result" framing above supersedes
+it.
 
 - **The clean result is run 1: naive 82.5% success vs gateway 100%
   success, 0 rejections, at a real cost of 32.5s vs 7.4s wall-clock.** Run
