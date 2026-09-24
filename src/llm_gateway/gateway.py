@@ -73,20 +73,11 @@ class LLMGateway:
         self.freshly_called = 0
         # Drives enqueued_at, blocked-time and end-to-end latency below, the
         # same way TokenBucket/ProviderLimiter/CircuitBreaker/Provider take an
-        # injectable clock so tests can control time deterministically.
-        #
-        # Constraint: the batcher (batching.py) intentionally keeps using
-        # real time.monotonic() for its own wait-deadline math, since its
-        # correctness depends on interacting with real asyncio timeouts (see
-        # batching.py). Batcher.collect() reads QueuedRequest.enqueued_at
-        # (set from self._clock() in submit(), below) and compares it against
-        # real time.monotonic() to decide whether a batch's max_wait has
-        # elapsed. If a fake clock here is far from real monotonic time, that
-        # comparison is meaningless. A test that injects a fake clock should
-        # either keep it offset-compatible with real time.monotonic() (e.g.
-        # a fixed value near "now", or an offset from it) or configure the
-        # batcher with a max_wait_ms large enough that timing out on the
-        # bogus elapsed time never happens.
+        # injectable clock so tests can control time deterministically. The
+        # batcher still uses real time.monotonic() for its own wait-deadline
+        # math (see batching.py), so a fake clock here should stay close to
+        # real monotonic time, or the batcher should be given a generous
+        # max_wait_ms, or its max_wait timeout math will misbehave.
         self._clock = clock or time.monotonic
 
         self.queue = RequestQueue()
@@ -139,17 +130,11 @@ class LLMGateway:
     # ------------------------------------------------------------------
 
     def _read_fatal(self) -> BaseException | None:
-        # Indirection, not a shortcut for `self._fatal`: mypy narrows a plain
-        # attribute read to `None` once it has seen a guard like `if
-        # self._fatal is not None: raise ...` earlier in the function, and
-        # keeps treating it as `None` for the rest of the function body. That
-        # is correct for code that never mutates the attribute again -- but
-        # `_fatal` is shared state the dispatcher task can set concurrently,
-        # out from under `submit()`, between the guard below and the re-check
-        # further down. Routing every read through a method call (whose
-        # result mypy cannot narrow the way it narrows a bare attribute)
-        # keeps both checks live instead of one being "optimized" away by the
-        # type checker as unreachable.
+        # A method call, not a bare attribute read: `_fatal` can be set by the
+        # dispatcher task concurrently, between the guard below and the
+        # re-check further down, and mypy would otherwise narrow a repeated
+        # `self._fatal` read to `None` after the first guard and treat the
+        # second check as unreachable.
         return self._fatal
 
     async def submit(self, request: LLMRequest) -> LLMResponse:
@@ -348,37 +333,22 @@ class LLMGateway:
 
         One `Reservation` is made per request, up front, sized at the
         worst-case cost among every eligible candidate for this batch
-        (`candidates`, already router-filtered and ordered best-first) --
-        not just the one that ends up serving it. This is a deliberate
-        choice between two ways to handle the fact that failover can move a
-        request to a differently-priced provider mid-flight:
-
-        1. Reserve once at the highest candidate price (chosen here), and
-           carry that single reservation across every failover attempt for
-           the request, settling or releasing it exactly once at the end.
-        2. Re-reserve on every failover: release the reservation held
-           against the failed candidate and reserve fresh against the next
-           one.
-
-        Option 2 matches the *actual* candidate more closely and so wastes
-        less headroom when a cheaper provider ends up serving the request,
-        but it violates the retry contract `budget.py` documents: releasing
-        and re-reserving between attempts of one logical request briefly
-        frees money for a concurrent request to grab, which that request
-        can then have taken back out from under it on the next attempt --
-        `committed` oscillates instead of staying pinned to the request's
-        worst case for its whole lifetime. Since a failover is just another
-        attempt of the same logical request from the ledger's point of
-        view, the same argument applies to it as to a same-provider retry.
-        Option 1 keeps the invariant simple (one reservation, closed exactly
-        once) at the cost of sometimes holding more budget than the request
-        actually ends up costing until it settles.
+        (`candidates`, already router-filtered and ordered best-first), not
+        just the one that ends up serving it. That single reservation is
+        then carried across every retry and failover attempt for the
+        request, settling or releasing exactly once at the end, rather than
+        released and re-reserved on each failover. Re-reserving on failover
+        would match the actual serving provider's price more closely, but it
+        would briefly free the money for a concurrent request to grab
+        between attempts, violating the invariant `budget.py` documents that
+        a request's worst-case reservation stays pinned for its whole
+        lifetime. The tradeoff is sometimes holding more budget than the
+        request ends up costing until it settles.
 
         A request whose worst-case reservation does not fit the remaining
         budget fails immediately with `BudgetExceeded`/`TokenBudgetExceeded`
         -- it is not added to the returned batch, so it never enters the
-        retry/failover loop and is not retried or failed over; running out
-        of money is not a provider fault.
+        retry/failover loop; running out of money is not a provider fault.
         """
         assert self.budget is not None
         admitted: list[QueuedRequest] = []
@@ -455,22 +425,19 @@ class LLMGateway:
         Returns `(leftover, last_exc)`. `leftover` is the subset of `batch`
         this provider could not resolve inside its retry budget -- empty
         when everything succeeded -- for the caller to hand to the next
-        candidate provider. `last_exc` is the most recent failure seen,
-        kept so the caller has something to report if every provider is
+        candidate provider. `last_exc` is the most recent failure seen, kept
+        so the caller has something to report if every provider is
         eventually exhausted. Every entry NOT in `leftover` has already had
         its future resolved with a successful response by the time this
         returns -- callers must not resolve them again.
 
-        `attempt` is shared by every entry still `pending` in a given
-        round: they were dispatched together, so they back off together
-        too, even though a fan-out provider can resolve different entries
-        on different rounds (one member retries while its siblings are
-        already done). That keeps one retry-delay computation per round
-        instead of per request, which matches the granularity a provider's
-        Retry-After header speaks at, and it means `response.attempts`
-        still ends up correct per entry: it is stamped from the round that
-        actually resolved that entry, not from whatever round the batch
-        started at.
+        `attempt` is shared by every entry still `pending` in a round: they
+        were dispatched together, so they back off together too (one
+        retry-delay computation per round, matching the granularity a
+        provider's Retry-After header speaks at), even though a fan-out
+        provider can resolve different entries on different rounds.
+        `response.attempts` is still correct per entry since it is stamped
+        from the round that actually resolved that entry.
         """
         pending = list(batch)
         leftover: list[QueuedRequest] = []
@@ -523,22 +490,15 @@ class LLMGateway:
 
             now = self._clock()
             retryable: list[QueuedRequest] = []
-            # A real batch endpoint fails as a single HTTP call:
-            # complete_batch_settled() hands every member of the batch back
-            # the *same* exception object in that case (see base.py).
-            # Deduplicating by identity here is what makes the breaker (and
-            # the failure counter) see that as the one attempt it actually
-            # was, rather than N. Without this, one failed 8-request batch
-            # call could push a breaker sized for 5 consecutive failures
-            # straight to open on its own -- exactly the over-eager tripping
-            # this file is trying to avoid, just from the opposite
-            # direction. A fan-out (non-batching) provider never produces
-            # two entries sharing an exception object -- each is its own
-            # call and raises its own exception -- so nothing collides here
-            # and every failure is still counted on its own; that is also
-            # what makes a single bad request out of sixteen move the
-            # breaker's consecutive-failure count by exactly one, nowhere
-            # near enough to trip a threshold of five by itself.
+            # A real batch endpoint fails as a single HTTP call, so
+            # complete_batch_settled() hands every member the *same*
+            # exception object (see base.py). Deduplicating by identity here
+            # makes the breaker and failure counter see that as the one
+            # attempt it actually was, instead of N -- otherwise one failed
+            # 8-request batch call could trip a breaker sized for 5
+            # consecutive failures by itself. A fan-out provider never
+            # shares an exception object between entries, so each of its
+            # failures is still counted on its own.
             seen_failures: set[int] = set()
             for entry, result in zip(pending, results, strict=True):
                 if isinstance(result, Exception):
