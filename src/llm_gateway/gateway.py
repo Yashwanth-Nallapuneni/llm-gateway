@@ -545,15 +545,16 @@ class LLMGateway:
             for entry, result in zip(pending, results, strict=True):
                 if isinstance(result, Exception):
                     last_exc = result
+                    status = getattr(result, "status", None)
                     if id(result) not in seen_failures:
                         seen_failures.add(id(result))
                         provider.breaker.record_failure()
-                    status = getattr(result, "status", None)
+                        # One 429 for a whole batch is one rejection, so the
+                        # rate is halved once, not once per request in it.
+                        # No-op unless the gateway was built with adaptive=True.
+                        if status == 429:
+                            provider.limiter.on_throttled()
                     self.metrics.record_failure(provider.name, status)
-                    if status == 429:
-                        # No-op unless the provider was built with
-                        # adaptive=True; see ProviderLimiter.on_throttled.
-                        provider.limiter.on_throttled()
                     if self.retry.should_retry(result, attempt):
                         retryable.append(entry)
                     else:

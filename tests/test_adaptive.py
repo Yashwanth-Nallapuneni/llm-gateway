@@ -6,6 +6,8 @@ and no test relies on asyncio.sleep actually waiting.
 
 from __future__ import annotations
 
+import asyncio
+
 from llm_gateway import LLMGateway, LLMRequest
 from llm_gateway.providers.mock import MockClient, MockProvider
 from llm_gateway.rate_limit import ProviderLimiter
@@ -73,3 +75,17 @@ async def test_gateway_end_to_end_slows_down_after_429s():
     # 10 -> 5 (first 429) -> 2.5 (second 429) -> 2.6 (the eventual success
     # adds back one step of 1% of the configured rate, 0.1).
     assert provider.limiter.requests.refill_rate == 2.6
+
+
+async def test_one_batch_level_429_halves_rate_once():
+    # A single 429 returned for a whole batch of requests is one rejection
+    # from the provider, so it must halve the rate once, not once per request.
+    client = MockClient("p", fail_sequence=[429])
+    provider = MockProvider("p", client=client, rpm_limit=600)
+    gw = LLMGateway(providers=[provider], adaptive=True)
+    before = provider.limiter.requests.refill_rate
+    await asyncio.gather(*(gw.submit(LLMRequest(prompt=f"q{i}")) for i in range(5)))
+    after = provider.limiter.requests.refill_rate
+    # Halved once, then grown back a little by up to 5 successes.
+    assert before * 0.5 <= after <= before * 0.5 + 5 * before * 0.01 + 1e-9
+    await gw.aclose()
