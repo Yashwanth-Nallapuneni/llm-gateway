@@ -1,5 +1,35 @@
 # Benchmark: what does llm-gateway buy you over a naive async loop?
 
+## Summary
+
+This compares two arms sending the same prompts: **naive**, a bounded
+`asyncio.gather` loop with proper retry (backoff, jitter, `Retry-After`)
+but no rate limiting, versus **gateway**, `llm_gateway.LLMGateway` with a
+token bucket set to the server's real limits, batching, and the same
+retry policy. Both are pointed at a server with an enforced rate limit.
+
+**Simulated result** (200 prompts against a 190/min server, over the
+limit): gateway cuts 429s from 85 to 16 and wall-clock from 14.3s to
+6.1s, at the same 92.5% success rate on both arms, but with a worse p99
+latency (0.157s to 0.518s).
+
+**Current live result against the real Groq API** (attempt 4, 3 runs,
+40 prompts/run): gateway 120/120 successes, 0 rate-limit rejections, at
+a real cost of ~31s per run. Naive gets 107/120 successes (97.5%, 85.0%,
+85.0% across the 3 runs), with 87 rate-limit rejections total, in
+~7-10s per run. The gateway is slower, not faster, on this workload
+against this account's real limits.
+
+**Below the provider's limit, the gateway shows no benefit** (see
+Configuration B below): both arms hit 100% success with near-identical
+wall-clock, because there is nothing to pace against.
+
+Do not cite 57.5% success or "lost 17 of 40" as a real result -- that
+number was retracted (see the note before it below) and only ever
+described a run invalidated by a `--max-live-calls` truncation. The full
+detailed results, per-run tables, and the history of prior benchmark
+attempts (including that retraction) are in the sections below.
+
 `bench.py` answers one question as honestly as a simulated harness can:
 against a server with a real, enforced rate limit and occasional transient
 failures, what's the actual difference between
