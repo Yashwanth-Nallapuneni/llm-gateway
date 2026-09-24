@@ -5,6 +5,23 @@ time. It assumes you have never published a Python package before. Read the
 whole thing once before doing anything: the real release step
 (`git push origin v0.1.0`) is irreversible.
 
+## Later releases (the setup below is already done)
+
+v0.1.0 went out through the steps below, so the accounts and trusted
+publishers already exist. A new release only needs:
+
+1. Set the new version in `pyproject.toml` and `src/llm_gateway/__init__.py`
+   (they must match), and date its section in `CHANGELOG.md`.
+2. Push that commit and wait for CI to go green.
+3. Optional rehearsal: Actions -> Release -> Run workflow (uploads to
+   TestPyPI).
+4. `git tag vX.Y.Z && git push origin vX.Y.Z`. This publishes to PyPI and
+   cannot be undone for that version number.
+5. On GitHub, Releases -> Draft a new release, pick the tag, and paste that
+   version's CHANGELOG section as the notes.
+
+The rest of this file is the first-time setup, kept for reference.
+
 ## 1. What PyPI and TestPyPI are
 
 - **PyPI** (https://pypi.org) is the real Python Package Index. Anything you
