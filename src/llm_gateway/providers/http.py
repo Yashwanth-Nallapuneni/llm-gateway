@@ -1,16 +1,16 @@
 """A real HTTP client for OpenAI-compatible chat-completion APIs.
 
-This module is the only place in the package that imports httpx, and it is
-imported lazily by consumers (see providers/__init__.py and the top-level
-package __init__.py) so that `import llm_gateway` keeps working when the
-optional `[http]` extra is not installed.
+This is the only module in the package that imports httpx, and consumers
+import it lazily (see providers/__init__.py and the top-level __init__.py)
+so `import llm_gateway` still works when the optional `[http]` extra isn't
+installed.
 
-`OpenAICompatibleClient` implements the `AsyncLLMClient` protocol (just
-`complete`, here) against the "POST /chat/completions" shape that OpenAI,
-Groq, OpenRouter, and most self-hosted inference servers all speak. Provider
-specific quirks (logprobs shape, strict-json shape, extra body fields) are
-factored out into small overridable hooks rather than branched on here, so
-that groq.py / openrouter.py can each subclass and adjust only what differs.
+`OpenAICompatibleClient` implements `complete` against the POST
+`/chat/completions` shape that OpenAI, Groq, OpenRouter, and most
+self-hosted inference servers speak. Provider-specific quirks (logprobs
+shape, strict-json shape, extra body fields) are factored into small
+overridable hooks so groq.py / openrouter.py can subclass and adjust only
+what differs.
 """
 
 from __future__ import annotations
@@ -290,13 +290,11 @@ class OpenAICompatibleClient:
     async def complete_batch(self, requests: list[LLMRequest]) -> list[LLMResponse]:
         """Sequential fallback so this class structurally satisfies AsyncLLMClient.
 
-        None of the OpenAI-compatible chat endpoints this client targets have
-        a synchronous multi-prompt batch call (see the module docstring), so
-        there is no real batch request to make -- this exists only so the
-        type satisfies AsyncLLMClient's Protocol; Provider.complete_batch
-        already prefers concurrent dispatch via the gateway's own batching
-        fallback when `supports_batching` is False, which is how groq.py and
-        openrouter.py configure their capabilities.
+        None of the OpenAI-compatible endpoints this targets has a real
+        synchronous batch call, so this exists only to satisfy the protocol;
+        groq.py and openrouter.py set `supports_batching=False`, so
+        `Provider.complete_batch` uses its own concurrent-dispatch fallback
+        instead of calling this.
         """
         return [await self.complete(r) for r in requests]
 

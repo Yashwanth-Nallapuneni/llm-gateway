@@ -68,12 +68,10 @@ __all__ = [
     "parse_retry_after",
 ]
 
-# groq_provider / openrouter_provider / OpenAICompatibleClient / GroqClient /
-# OpenRouterClient / parse_retry_after all live behind the optional `[http]`
-# extra (they import httpx). Re-exporting them lazily here, the same way
-# providers/__init__.py does, keeps `import llm_gateway` working with httpx
-# absent -- only actually touching one of these names imports httpx and can
-# raise the friendly "pip install aiollm-gateway[http]" error.
+# These names live behind the optional `[http]` extra (they import httpx).
+# Re-exporting them lazily, the same way providers/__init__.py does, keeps
+# `import llm_gateway` working with httpx absent; only touching one of these
+# names actually imports httpx and can raise the friendly install error.
 _LAZY_ATTRS = {
     "OpenAICompatibleClient",
     "parse_retry_after",

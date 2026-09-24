@@ -46,10 +46,9 @@ class Provider:
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be >= 1")
         self.max_concurrency = max_concurrency
-        # Rate and concurrency are different limits. RPM/TPM bound how much you
-        # send per minute; this bounds how many calls are open at once. Some
-        # hosts (DeepInfra: concurrent requests per model) limit only the
-        # latter, and without a cap a large sweep opens unbounded sockets.
+        # RPM/TPM cap how much is sent per minute; this caps how many calls
+        # are open at once. Some hosts only limit concurrency, and without
+        # this a large sweep would open unbounded sockets.
         self.concurrency = asyncio.Semaphore(max_concurrency)
 
         self.limiter = ProviderLimiter(rpm_limit, tpm_limit, clock=clock, sleep=sleep)
@@ -80,11 +79,9 @@ class Provider:
         return 0.3 * c.cost_per_1k_input + 0.7 * c.cost_per_1k_output
 
     async def complete(self, request: LLMRequest) -> LLMResponse:
-        # The concurrency slot bounds actual in-flight HTTP calls, so it is
-        # acquired here, around the single network call, rather than by the
-        # caller around the whole batch. That is what lets the fallback below
-        # dispatch many requests at once while max_concurrency still means
-        # "at most this many sockets open to this provider at a time".
+        # Acquired here, around the single call, rather than by the caller
+        # around a whole batch, so the fallback below can dispatch many
+        # requests at once while max_concurrency still bounds live sockets.
         async with self.concurrency:
             return await self.client.complete(request)
 
@@ -93,19 +90,15 @@ class Provider:
     ) -> list[LLMResponse | Exception]:
         """Per-request outcomes: one entry per request, and it never raises.
 
-        This is the internal counterpart to `complete_batch()` below. The
-        gateway calls this one directly, not `complete_batch()`, because it
-        needs to know exactly *which* requests in a batch failed so it can
-        retry or fail over only those -- treating every failure as "the
-        whole batch is dead" is what let one unlucky request take fifteen
-        healthy siblings down with it.
+        The gateway calls this directly, not `complete_batch()`, because it
+        needs to know which requests in a batch failed so it can retry or
+        fail over only those, instead of treating one bad request as reason
+        to kill every sibling in the batch.
 
-        For a real batch endpoint the whole request is one HTTP call, so it
-        can only succeed or fail as a unit: on failure every entry gets the
-        same exception object back (deliberately the same object, not
-        sixteen equal-but-distinct copies -- see the comment in
-        gateway.py on how that identity is used to avoid over-counting a
-        single atomic failure as sixteen separate ones).
+        A real batch endpoint is one HTTP call, so it succeeds or fails as a
+        unit: on failure every entry gets back the same exception object
+        (not equal-but-distinct copies), which gateway.py relies on to avoid
+        counting one atomic failure as many.
         """
         if self.supports_batching and hasattr(self.client, "complete_batch"):
             # One HTTP call carries the whole batch, so it costs one slot.
@@ -117,39 +110,22 @@ class Provider:
             return list(responses)
 
         # Fallback for providers with no synchronous multi-prompt endpoint
-        # (Groq, OpenRouter): coordinated concurrent dispatch. The batch was
-        # grouped for rate-limit accounting, but each member is really its
-        # own independent HTTP call, so fire them all at once instead of one
-        # after another -- a batch of 16 sequential round trips is exactly
-        # the latency the batcher was supposed to avoid.
-        #
-        # Each `complete()` call acquires its own slot from `self.concurrency`
-        # independently, so a batch of 16 against max_concurrency=2 simply
-        # serializes into 8 waves of 2: no task ever holds a slot while
-        # waiting on another slot, so there is nothing that can deadlock.
-        #
-        # `return_exceptions=True` is the whole point here: because these
-        # calls are independent, one of them raising must not stop the
-        # others from running to completion, and it must not be treated as
-        # a reason to cancel its siblings. gather() already waits for every
-        # task before returning regardless of return_exceptions, so nothing
-        # is left running in the background afterwards -- there is no
-        # orphaned-task risk that cancellation was ever needed to prevent.
+        # (Groq, OpenRouter): the batch was grouped only for rate-limit
+        # accounting, but each member is really its own HTTP call, so fire
+        # them all at once instead of one after another. Each `complete()`
+        # call acquires its own concurrency slot independently, so a batch
+        # of 16 against max_concurrency=2 just serializes into 8 waves of 2
+        # with no deadlock risk. `return_exceptions=True` matters because
+        # these calls are independent: one raising must not cancel or block
+        # the others, and `gather()` still waits for all of them either way.
         tasks = [asyncio.create_task(self.complete(r)) for r in requests]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return cast("list[LLMResponse | Exception]", results)
 
     async def complete_batch(self, requests: list[LLMRequest]) -> list[LLMResponse]:
-        """All-or-nothing view: for external callers, and for the true-batch
-        path where that is simply what a single HTTP call means.
-
-        Built on `complete_batch_settled()` so the two never drift apart.
-        If anything failed, this waits for every sibling to finish (settled
-        already did that) and then raises the first failure -- giving a
-        caller who does not want per-request granularity the same "batch
-        either works or raises" contract the old implementation had, minus
-        the cancel-on-first-failure behaviour that made partial success
-        impossible for the gateway to use.
+        """All-or-nothing view for external callers who don't need per-request
+        granularity: built on `complete_batch_settled()`, and raises the
+        first failure if anything failed, after every sibling has finished.
         """
         results = await self.complete_batch_settled(requests)
         for result in results:

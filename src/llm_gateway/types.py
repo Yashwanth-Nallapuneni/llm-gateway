@@ -65,12 +65,10 @@ class LLMResponse:
     def was_truncated(self) -> bool:
         """True when the response was cut off for running out of tokens.
 
-        This is the signal a caller needs to catch the reasoning-model trap:
-        a small `max_tokens` budget consumed entirely by hidden reasoning
-        tokens, leaving `text == ""` with no indication anything went wrong
-        unless `finish_reason` is checked. `was_truncated` is true for *any*
-        length-truncated response, not just empty ones -- a non-empty answer
-        cut short by the token budget is exactly as truncated.
+        Catches the reasoning-model trap: a small `max_tokens` budget can be
+        spent entirely on hidden reasoning, leaving `text == ""` with no other
+        sign anything went wrong unless `finish_reason` is checked. True for
+        any length-truncated response, not just empty ones.
         """
         return self.finish_reason == "length"
 

@@ -471,12 +471,10 @@ async def run_gateway(
 
     store: RunStore | None = None
     if args.store is not None:
-        # Opening the file (and reclaiming any `in_flight` rows left by a
-        # previous, crashed process -- see store.py) is a handful of quick
-        # sqlite statements against what is, at worst, a file with a few
-        # tens of thousands of rows. It runs once, before any provider call
-        # is even dispatched, so blocking the not-yet-busy event loop for it
-        # costs nothing a real sweep would notice.
+        # Opening the file (and reclaiming any `in_flight` rows a previous
+        # crashed run left behind -- see store.py) is a few quick sqlite
+        # statements, done once before any provider call, so it costs
+        # nothing a real sweep would notice.
         store = RunStore(args.store)
 
     budget: BudgetLedger | None = None
@@ -494,12 +492,9 @@ async def run_gateway(
         adaptive=args.adaptive,
     )
 
-    # Every prompt gets a row in `rows` no matter how the run ends: a
-    # BudgetExceeded (or any other) failure is caught per-prompt by
-    # `_submit_one` and turned into an error row, never left to propagate
-    # out of `asyncio.gather` and take the results already collected for
-    # every other prompt down with it. A ceiling hit at prompt 401 of 1000
-    # must not cost the 400 results already in hand.
+    # Every prompt gets a row no matter how the run ends: `_submit_one` turns
+    # any failure into an error row instead of letting it propagate out of
+    # `asyncio.gather` and take every other prompt's result down with it.
     rows: list[dict[str, Any]] = []
     any_failed = False
     budget_skipped = 0

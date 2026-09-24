@@ -1,18 +1,13 @@
 """Factory for an OpenRouter-backed Provider.
 
-OpenRouter is an aggregator, not a model host: a single OpenRouter "model"
-id (e.g. "meta-llama/llama-3.3-70b-instruct") can be served by several
-different upstream inference providers behind the scenes, chosen per
-request. That matters for two things this module handles specially:
-
-1. `require_parameters`: without it, OpenRouter may silently route a
-   request to an upstream that ignores a parameter it doesn't support (e.g.
-   logprobs, or strict JSON mode) instead of erroring -- you get back a
-   well-formed 200 response that is just missing the field you asked for.
-   Setting `provider.require_parameters: true` tells OpenRouter to only
-   route to upstreams that actually honor every parameter in the request,
-   which turns that silent gap into a normal routing failure instead.
-2. No synchronous batch endpoint exists at all (see supports_batching below).
+OpenRouter is an aggregator, not a model host: one OpenRouter "model" id can
+be served by several different upstream inference providers, chosen per
+request. That is why `require_parameters` matters: without it, OpenRouter
+may silently route to an upstream that ignores a parameter it doesn't
+support (e.g. logprobs or strict JSON), returning a well-formed 200 that is
+just missing the field you asked for. Setting `provider.require_parameters:
+true` turns that silent gap into a normal routing failure instead. There is
+also no synchronous batch endpoint at all (see supports_batching below).
 """
 
 from __future__ import annotations
@@ -42,16 +37,14 @@ class OpenRouterClient(OpenAICompatibleClient):
         return {}
 
     def _raise_for_status(self, response: Any) -> None:
-        # 402 = out of credit. Map it explicitly (rather than letting it
-        # fall through to the generic 4xx path) so the message is clear;
-        # it lands in NON_RETRYABLE_STATUSES via RetryPolicy's `status >= 500`
-        # fallback being False for 402, so it is already not retried, but we
-        # still want to surface the specific "add credit" message.
+        # 402 = out of credit. Mapped explicitly, rather than falling through
+        # to the generic 4xx path, so the message is clear -- RetryPolicy
+        # already treats it as non-retryable (status < 500), this just adds
+        # the specific "add credit" wording.
         #
-        # No _notify_headers call here: `complete()` in http.py already calls
-        # it once for every response, success or error, before reaching
-        # `_raise_for_status`. Calling it again here would invoke on_headers
-        # (and the limiter's sync_from_headers) twice for the same response.
+        # No _notify_headers call here: http.py's complete() already calls it
+        # once per response before reaching _raise_for_status; calling it
+        # again would double-invoke on_headers for the same response.
         if response.status_code == 402:
             message = self._error_message(response)
             raise ProviderError(
@@ -69,14 +62,11 @@ def _wire_header_sync(
 ) -> None:
     """Point the client's on_headers hook at this provider's rate limiter.
 
-    Without this, the limiter runs purely on the numbers configured above,
-    which are a guess: the real limit depends on your plan, and on whatever
-    else is sharing the API key right now. The provider reports the truth on
-    every response, so feed it back into the buckets.
-
-    Any callback the caller supplied still runs -- it is chained, not replaced,
-    so passing `on_headers=` remains a way to observe headers rather than a way
-    to accidentally disable the sync.
+    Without this, the limiter runs on the configured numbers alone, which are
+    a guess: the real limit depends on your plan and whoever else shares the
+    API key. The provider reports the truth on every response, so feed it
+    back into the buckets. Any caller-supplied callback is chained, not
+    replaced, so `on_headers=` stays a way to observe rather than disable it.
     """
     sync = provider.limiter.sync_from_headers
 
