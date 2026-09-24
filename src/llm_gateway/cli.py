@@ -593,6 +593,16 @@ def _models_command(args: argparse.Namespace, out: TextIO) -> int:
 # --------------------------------------------------------------------------
 
 
+RUN_EXAMPLES = """examples:
+  llm-gateway run prompts.txt --provider mock
+  llm-gateway run prompts.jsonl --provider groq --dry-run
+  llm-gateway run prompts.jsonl --provider groq,openrouter \\
+      --model groq=allam-2-7b,openrouter=meta-llama/llama-3.1-8b-instruct \\
+      --budget 1.00 --store sweep.db --output out.jsonl
+  llm-gateway run prompts.jsonl --provider groq --store sweep.db --resume
+"""
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llm-gateway",
@@ -602,7 +612,10 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     run = subparsers.add_parser(
-        "run", help="Run every prompt in INPUT through the gateway."
+        "run",
+        help="Run every prompt in INPUT through the gateway.",
+        epilog=RUN_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     run.add_argument(
         "input",
