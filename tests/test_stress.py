@@ -117,3 +117,30 @@ async def test_concurrent_load_never_hangs_and_settles_cleanly(
         assert counts.get("in_flight", 0) == 0
 
     await store.aclose()
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+async def test_closing_mid_run_resolves_every_caller(tmp_path: Path, seed: int) -> None:
+    # Close the gateway while requests are queued and in flight. Every
+    # caller must still get an answer or an error; none may wait forever,
+    # and the store must not be left with rows marked in_flight.
+    rng = random.Random(seed)
+    store = RunStore(tmp_path / f"close-{seed}.db")
+    gw = LLMGateway(providers=make_providers(rng), retry=fast_retry(), store=store)
+
+    async def submit_one(i: int) -> object:
+        try:
+            return await gw.submit(LLMRequest(f"prompt-{i}"))
+        except (ProviderError, GatewayError) as exc:
+            return exc
+
+    tasks = [asyncio.ensure_future(submit_one(i)) for i in range(N_REQUESTS)]
+    await asyncio.sleep(0.02)
+    await gw.aclose()
+    results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=OVERALL_TIMEOUT)
+
+    assert len(results) == N_REQUESTS
+    assert all(isinstance(r, (LLMResponse, ProviderError, GatewayError)) for r in results)
+    counts = await store.counts()
+    assert counts.get("in_flight", 0) == 0
+    await store.aclose()

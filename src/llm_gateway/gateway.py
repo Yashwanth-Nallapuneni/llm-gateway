@@ -85,6 +85,9 @@ class LLMGateway:
         self._in_flight = 0
         self._dispatcher: asyncio.Task[None] | None = None
         self._workers: set[asyncio.Task[None]] = set()
+        # Every request whose caller is still waiting, so aclose() can answer
+        # all of them no matter where each one is (queue, batcher, dispatch).
+        self._waiting: dict[int, QueuedRequest] = {}
         # Set if the dispatcher loop itself dies. Without this, a crash in the
         # dispatcher leaves every caller awaiting a future nobody will ever
         # resolve -- the program hangs instead of reporting the error.
@@ -113,10 +116,14 @@ class LLMGateway:
             await asyncio.gather(*pending, return_exceptions=True)
         self._dispatcher = None
         self._workers.clear()
-        # Anything still sitting in the queue was never picked up by the
-        # dispatcher we just cancelled -- without this, its future is never
-        # resolved and the caller's `submit()` awaits it forever.
-        self._drain_with_error(GatewayError("gateway closed while request was queued"))
+        # Answer every caller still waiting, wherever its request was (queue,
+        # batcher, or mid-dispatch); otherwise their submit() waits forever.
+        self._drain_with_error(GatewayError("gateway closed before the request finished"))
+        for entry in list(self._waiting.values()):
+            if not entry.future.done():
+                entry.future.set_exception(
+                    GatewayError("gateway closed before the request finished")
+                )
 
     async def __aenter__(self) -> LLMGateway:
         self._ensure_started()
@@ -214,6 +221,8 @@ class LLMGateway:
             request=request, future=loop.create_future(), enqueued_at=self._clock()
         )
         self.metrics.submitted += 1
+        self._waiting[id(entry)] = entry
+        entry.future.add_done_callback(lambda _: self._waiting.pop(id(entry), None))
         self.queue.put(entry)
         # Re-check: the dispatcher can have crashed and drained the queue
         # between the check above and this put, which would leave this entry
@@ -332,13 +341,6 @@ class LLMGateway:
                     if reservation is not None:
                         reservation.release()
                 self._fail_batch(remaining, last_exc)
-        except asyncio.CancelledError:
-            # aclose() cancels workers mid-dispatch; this batch is no longer in
-            # the queue, so fail it here or its callers would wait forever.
-            self._fail_batch(
-                batch, GatewayError("gateway closed while request was in flight")
-            )
-            raise
         except Exception as exc:
             # An unexpected bug anywhere above (not one of the already-handled
             # provider/budget/routing failure paths) would otherwise propagate
