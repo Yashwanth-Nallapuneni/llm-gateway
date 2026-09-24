@@ -21,6 +21,7 @@ from .retry import RetryPolicy
 from .routing import ProviderRouter
 from .store import RunStore, idempotency_key
 from .types import (
+    GatewayError,
     LLMRequest,
     LLMResponse,
     NoEligibleProviderError,
@@ -112,6 +113,10 @@ class LLMGateway:
             await asyncio.gather(*pending, return_exceptions=True)
         self._dispatcher = None
         self._workers.clear()
+        # Anything still sitting in the queue was never picked up by the
+        # dispatcher we just cancelled -- without this, its future is never
+        # resolved and the caller's `submit()` awaits it forever.
+        self._drain_with_error(GatewayError("gateway closed while request was queued"))
 
     async def __aenter__(self) -> LLMGateway:
         self._ensure_started()
@@ -323,6 +328,13 @@ class LLMGateway:
                     if reservation is not None:
                         reservation.release()
                 self._fail_batch(remaining, last_exc)
+        except Exception as exc:
+            # An unexpected bug anywhere above (not one of the already-handled
+            # provider/budget/routing failure paths) would otherwise propagate
+            # out of this task with nobody awaiting it -- every future for
+            # this batch would then hang forever instead of surfacing the
+            # error to the caller who is actually waiting on it.
+            self._fail_batch(batch, exc)
         finally:
             self._in_flight -= len(batch)
 
