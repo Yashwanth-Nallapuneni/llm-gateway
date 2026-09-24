@@ -29,6 +29,11 @@ All notable changes to this project are documented in this file, in
   the live model IDs a provider currently offers, sorted, via
   `OpenAICompatibleClient.list_models()` (GET `{base_url}/models`) — a way
   to find a model that hasn't been retired since a default was picked.
+- `.github/workflows/live.yml` now also runs the OpenRouter live tests when
+  an optional `OPENROUTER_API_KEY` secret is configured on the `live-tests`
+  environment (self-skips cleanly without it; the existing 5-test pass
+  floor is unaffected either way). See `docs/LIVE_TESTING.md` for setup and
+  the roughly half-cent-per-run cost.
 
 ### Fixed
 

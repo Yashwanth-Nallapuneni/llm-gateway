@@ -206,6 +206,36 @@ file is a no-op for anyone without a key.
 OPENROUTER_API_KEY=$(cat ~/.openrouter_key) python3 -m pytest tests/test_live_openrouter.py -m live -q
 ```
 
+## CI: adding the optional OPENROUTER_API_KEY secret
+
+`.github/workflows/live.yml` runs the Groq live tests unconditionally and
+also passes `OPENROUTER_API_KEY` through to pytest if it is configured.
+It is **optional** -- the workflow's pass-count floor (5 live tests, see
+the Groq CI section above) is based on Groq alone, so the job stays green
+whether or not this secret exists. Without it, every test in
+`tests/test_live_openrouter.py` self-skips via its own `skipif`, exactly
+like a local run with no key. With it, those tests also run for real on
+every manual dispatch and the weekly Monday canary.
+
+To add it, as the repo owner:
+
+1. Go to Settings -> Environments -> `live-tests` (the same environment
+   `GROQ_API_KEY` already uses).
+2. Add environment secret `OPENROUTER_API_KEY` with your OpenRouter key.
+3. No other change is needed -- the workflow already reads it and the
+   result floor already tolerates its absence.
+
+**Cost note:** unlike Groq (free tier), `tests/test_live_openrouter.py`
+uses a paid model by default (`LIVE_MODEL = "meta-llama/llama-3.1-8b-instruct"`,
+see "Model choice and cost" below) rather than one of OpenRouter's free
+models, because the free reasoning models available at the time returned
+empty content or real 429s under this suite's `max_tokens=16` budget. A
+full run of this file was observed to cost about $0.0045 -- roughly
+**half a cent per run** -- which at the weekly canary cadence is about
+2 cents a month. This is small but not zero, unlike the Groq side, so
+treat adding the secret as an explicit cost decision rather than a purely
+mechanical setup step.
+
 ## Model choice and cost (verified 2026-09-24)
 
 `LIVE_MODEL` is `meta-llama/llama-3.1-8b-instruct`, a cheap paid model

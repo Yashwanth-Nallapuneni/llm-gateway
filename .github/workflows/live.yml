@@ -22,7 +22,15 @@
 #      secrets take precedence over/are separate from repository secrets, and
 #      scoping it to the environment is what lets the reviewer gate apply).
 #
-#   4. To trigger a run: go to the "Actions" tab -> "Live provider tests"
+#   4. (Optional) Add OPENROUTER_API_KEY to the same "live-tests" environment
+#      to also run tests/test_live_openrouter.py against the real OpenRouter
+#      API. This secret is not required: every OpenRouter live test carries
+#      its own skipif on OPENROUTER_API_KEY being unset, so the file is a
+#      clean, all-skipped no-op without it, and the pass-count floor below
+#      already accounts for that (see docs/LIVE_TESTING.md for cost and setup
+#      details).
+#
+#   5. To trigger a run: go to the "Actions" tab -> "Live provider tests"
 #      (this workflow) in the left sidebar -> "Run workflow" button -> pick
 #      the branch -> "Run workflow".
 #
@@ -52,9 +60,10 @@
 # Security note: `pull_request_target` is intentionally never used here. That
 # trigger runs workflow code from the base branch but checks out and can be
 # steered by a fork's PR content, which would let an attacker exfiltrate
-# GROQ_API_KEY through a malicious PR. This workflow only ever runs on
-# workflow_dispatch (and the fixed weekly schedule above), both of which use
-# the trusted default branch and require repo-write access to trigger.
+# GROQ_API_KEY or OPENROUTER_API_KEY through a malicious PR. This workflow
+# only ever runs on workflow_dispatch (and the fixed weekly schedule above),
+# both of which use the trusted default branch and require repo-write access
+# to trigger.
 
 name: Live provider tests
 
@@ -69,7 +78,7 @@ permissions:
 
 jobs:
   live:
-    name: live (groq)
+    name: live (groq + openrouter)
     runs-on: ubuntu-latest
     environment: live-tests
     # Guards against a hung network call burning Actions minutes; the whole
@@ -88,8 +97,12 @@ jobs:
       - name: Install package with dev dependencies
         run: pip install -e ".[dev]"
 
-      # GROQ_API_KEY is scoped to this step only (not the job or workflow),
-      # and is never echoed, dumped via `env`, or exposed via `set -x`.
+      # GROQ_API_KEY and OPENROUTER_API_KEY are scoped to this step only (not
+      # the job or workflow), and neither is ever echoed, dumped via `env`,
+      # or exposed via `set -x`. OPENROUTER_API_KEY is optional: if the
+      # "live-tests" environment doesn't have it configured, this resolves
+      # to an empty string, and every test in tests/test_live_openrouter.py
+      # self-skips via its own skipif -- it does not fail the job.
       #
       # This step intentionally does not fail the job by itself on a non-zero
       # pytest exit -- the exit code is captured into $GITHUB_ENV and checked
@@ -98,9 +111,10 @@ jobs:
       # quietly self-skipped" are reported with one clear message instead of
       # pytest's default (and, for the all-skipped case, misleadingly green)
       # exit status.
-      - name: Run live tests against the real Groq API
+      - name: Run live tests against the real Groq and OpenRouter APIs
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set +e
           pytest -m live -q --junit-xml=live-results.xml
@@ -121,6 +135,13 @@ jobs:
       # docs/LIVE_TESTING.md). So "every live test genuinely ran" looks like
       # 5 passed + 1 skipped, never 6 passed. If tests/test_live_groq.py
       # gains or loses live tests, update MIN_LIVE_PASSED to match.
+      #
+      # This floor is deliberately based on Groq alone, so it holds whether
+      # or not OPENROUTER_API_KEY is configured. Without it,
+      # tests/test_live_openrouter.py's tests all self-skip via their own
+      # skipif and contribute 0 to `passed` -- Groq's 5 still clear the
+      # floor. With it, OpenRouter's tests add their own passes on top,
+      # which only raises `passed` further and never breaks the check.
       #
       # This step never prints GROQ_API_KEY or any other secret -- only test
       # names and pass/fail/skip counts read back from the JUnit XML.
