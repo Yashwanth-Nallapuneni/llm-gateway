@@ -109,7 +109,15 @@ class RetryPolicy:
         # returning `Any` (it must cover negative exponents, which escape int),
         # which would otherwise leak Any through `raw` and `delay` below. The
         # float base gives the identical value with a real `float` type.
-        raw = self.base_delay * (2.0**attempt)
+        #
+        # Cap the exponent itself before computing the power. A caller with
+        # a large max_attempts can reach attempt values in the hundreds or
+        # thousands; 2.0 ** attempt raises OverflowError once attempt gets
+        # into the low thousands, well before the min(raw, max_delay) below
+        # ever gets a chance to bound it. Any attempt past ~64 already
+        # produces a raw delay far beyond any realistic max_delay, so
+        # capping the exponent there changes nothing about the result.
+        raw = self.base_delay * (2.0 ** min(attempt, 64))
 
         # The cap must be applied BEFORE jitter, not after. 2**attempt
         # overflows into minutes-then-hours by attempt 12; capping first

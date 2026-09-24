@@ -400,6 +400,10 @@ class ProviderLimiter:
         # deadlocking against each other under contention.
         await self.requests.acquire(n_requests)
         if n_tokens > 0:
+            # A batch can need more tokens than the bucket holds (the
+            # default batch token limit is above some providers' TPM). Such
+            # a call waits for a completely full bucket and takes it all,
+            # rather than failing a batch that would otherwise go through.
             await self.tokens.acquire(min(n_tokens, self.tokens.capacity))
 
     def on_throttled(self) -> None:
