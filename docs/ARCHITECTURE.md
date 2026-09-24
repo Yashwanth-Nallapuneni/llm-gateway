@@ -128,7 +128,7 @@ flowchart TD
 | `store.py` | SQLite-backed idempotent, resumable request/response log | ~330 |
 | `metrics.py` | In-memory counters, latency percentiles, and a text report | ~170 |
 | `types.py` | Shared dataclasses (`LLMRequest`, `LLMResponse`, ...) and exceptions | ~185 |
-| `cli.py` | `llm-gateway run` command-line entry point | ~775 |
+| `cli.py` | `llm-gateway` command-line entry point (`run` and `models`) | ~890 |
 | `providers/base.py` | `Provider`: pairs a client with its own limiter, breaker, and concurrency cap | ~160 |
 | `providers/mock.py` | In-process fake provider used by the whole test suite | ~235 |
 | `providers/http.py` | Generic OpenAI-compatible HTTP client (needs `httpx`) | ~310 |

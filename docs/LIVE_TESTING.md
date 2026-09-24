@@ -1,9 +1,10 @@
 # Live testing against the real Groq API
 
-Everything under `tests/` except `tests/test_live_groq.py` runs entirely
-offline, against mocks or `httpx.MockTransport`. `test_live_groq.py` is the
-one file that makes real network calls to Groq, and it only runs when you
-explicitly ask for it.
+Everything under `tests/` except `test_live_groq.py` and
+`test_live_openrouter.py` runs entirely offline, against mocks or
+`httpx.MockTransport`. Those two files make real network calls to Groq and
+OpenRouter respectively, and they only run when you explicitly ask for
+them. This section covers Groq; OpenRouter is covered further down.
 
 ## Get a free key
 

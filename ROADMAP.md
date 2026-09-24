@@ -6,9 +6,11 @@ so re-check anything marked (verify) before relying on it.
 ## Current state
 
 `llm_gateway` is a zero-runtime-dependency async layer for pacing, retrying,
-batching and routing requests across LLM providers. 234 tests pass; CI runs
-pytest, ruff and mypy on Python 3.11-3.14 and builds/validates the package
-on every push and pull request. The package is published on PyPI as
+batching and routing requests across LLM providers. 313 tests pass (plus 14
+live tests, deselected by default, that call real provider APIs); CI runs
+pytest, ruff (check and format) and mypy on Python 3.11-3.14 and
+builds/validates the package on every push and pull request. The package is
+published on PyPI as
 [`aiollm-gateway`](https://pypi.org/project/aiollm-gateway/) (v0.1.0,
 released via Trusted Publishing from a tagged GitHub Actions run).
 
@@ -52,13 +54,6 @@ against naive's 107/120 (97.5%, 85.0%, 85.0% per run, 87 real 429s,
 ~7-10s/run) -- the gateway trades wall-clock time for zero dropped
 prompts, which does not reproduce the simulated benchmark's wall-clock win
 and is not meant to.
-
-## Not yet done
-
-- **`ruff format` not enforced in CI.** `.github/workflows/ci.yml` runs
-  `ruff check` but not `ruff format --check`; the comment there explains
-  that turning it on today would reformat about ten files with no
-  functional benefit, and asks for a deliberate `ruff format` pass first.
 
 ## Next
 
