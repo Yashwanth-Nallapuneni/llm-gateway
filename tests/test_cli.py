@@ -646,3 +646,91 @@ def test_models_command_missing_api_key_exits_2(monkeypatch, capsys):
     code = main(["models", "--provider", "groq"])
     assert code == 2
     assert "GROQ_API_KEY" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# input/flag validation edge cases
+# --------------------------------------------------------------------------
+
+
+def test_negative_limit_is_rejected(tmp_path, capsys):
+    input_path = _write(
+        tmp_path,
+        "prompts.jsonl",
+        "\n".join(json.dumps({"prompt": f"item {i}"}) for i in range(5)),
+    )
+    code = main(
+        ["run", str(input_path), "--provider", "mock", "--limit", "-2", "--no-metrics"]
+    )
+    assert code == 2
+    assert "--limit" in capsys.readouterr().err
+
+
+def test_zero_budget_is_rejected_cleanly(tmp_path, capsys):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}) + "\n")
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--provider",
+            "mock",
+            "--budget",
+            "0",
+            "--no-metrics",
+        ]
+    )
+    assert code == 2
+    assert "--budget" in capsys.readouterr().err
+
+
+def test_negative_budget_is_rejected_cleanly(tmp_path, capsys):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}) + "\n")
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--provider",
+            "mock",
+            "--budget",
+            "-5",
+            "--no-metrics",
+        ]
+    )
+    assert code == 2
+    assert "--budget" in capsys.readouterr().err
+
+
+def test_unwritable_output_path_is_rejected_cleanly(tmp_path, capsys):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}) + "\n")
+    bad_output = tmp_path / "no_such_dir" / "out.jsonl"
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--provider",
+            "mock",
+            "--output",
+            str(bad_output),
+            "--no-metrics",
+        ]
+    )
+    assert code == 2
+    assert "could not write" in capsys.readouterr().err
+
+
+def test_unwritable_metrics_json_path_is_rejected_cleanly(tmp_path, capsys):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}) + "\n")
+    bad_metrics = tmp_path / "no_such_dir" / "metrics.json"
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--provider",
+            "mock",
+            "--metrics-json",
+            str(bad_metrics),
+            "--no-metrics",
+        ]
+    )
+    assert code == 2
+    assert "could not write" in capsys.readouterr().err

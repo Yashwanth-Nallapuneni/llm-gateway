@@ -764,6 +764,10 @@ def _check_store_flags(args: argparse.Namespace) -> None:
 def _check_budget_flags(args: argparse.Namespace) -> None:
     if args.max_total_tokens is not None and args.budget is None:
         raise CliError("--max-total-tokens requires --budget USD")
+    if args.budget is not None and args.budget <= 0:
+        raise CliError(f"--budget must be > 0, got {args.budget}")
+    if args.max_total_tokens is not None and args.max_total_tokens <= 0:
+        raise CliError(f"--max-total-tokens must be > 0, got {args.max_total_tokens}")
 
 
 def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
@@ -771,6 +775,8 @@ def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     _check_budget_flags(args)
     items = read_input(args.input)
     if args.limit is not None:
+        if args.limit < 0:
+            raise CliError(f"--limit must be >= 0, got {args.limit}")
         items = items[: args.limit]
     if not items:
         raise CliError("no prompts to run: input was empty")
@@ -818,13 +824,19 @@ def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         for row in rows:
             out.write(json.dumps(row) + "\n")
     else:
-        with open(args.output, "w", encoding="utf-8") as output_stream:
-            for row in rows:
-                output_stream.write(json.dumps(row) + "\n")
+        try:
+            with open(args.output, "w", encoding="utf-8") as output_stream:
+                for row in rows:
+                    output_stream.write(json.dumps(row) + "\n")
+        except OSError as exc:
+            raise CliError(f"could not write {args.output}: {exc}") from exc
 
     if args.metrics_json is not None:
-        with open(args.metrics_json, "w", encoding="utf-8") as metrics_stream:
-            json.dump(metrics_dict, metrics_stream)
+        try:
+            with open(args.metrics_json, "w", encoding="utf-8") as metrics_stream:
+                json.dump(metrics_dict, metrics_stream)
+        except OSError as exc:
+            raise CliError(f"could not write {args.metrics_json}: {exc}") from exc
 
     if not args.no_metrics:
         print(report, file=err)
