@@ -137,6 +137,11 @@ were served from the store versus freshly called. Replay returns each
 prompt's first answer, not a new sample -- correct for reproducing an eval,
 not for resampling at temperature > 0.
 
+Use `--store` for any run you might stop with Ctrl-C: `--output` is only
+written when a run finishes, but the store keeps every completed prompt as
+it goes. The hash does not include the provider name, so resuming with a
+different `--provider` but the same model reuses the stored answers.
+
 ## Does it actually help?
 
 Measured against a simulated server enforcing 190 requests/minute, 200 prompts,

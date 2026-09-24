@@ -734,3 +734,173 @@ def test_unwritable_metrics_json_path_is_rejected_cleanly(tmp_path, capsys):
     )
     assert code == 2
     assert "cannot write" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# jsonl edge cases
+# --------------------------------------------------------------------------
+
+
+def test_jsonl_blank_lines_are_skipped(tmp_path):
+    input_path = _write(
+        tmp_path,
+        "prompts.jsonl",
+        '\n\n{"prompt": "a"}\n\n{"prompt": "b"}\n\n',
+    )
+    output_path = tmp_path / "out.jsonl"
+    code = main(["run", str(input_path), "--output", str(output_path), "--no-metrics"])
+    assert code == 0
+    rows = _lines(output_path.read_text())
+    assert [r["prompt"] for r in rows] == ["a", "b"]
+
+
+def test_jsonl_non_string_prompt_is_rejected(tmp_path, capsys):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": 123}))
+    code = main(["run", str(input_path)])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "prompt" in err
+    assert "Traceback" not in err
+
+
+def test_jsonl_extra_fields_are_ignored(tmp_path):
+    input_path = _write(
+        tmp_path,
+        "prompts.jsonl",
+        json.dumps({"prompt": "hi", "unexpected_field": "whatever", "another": 1}),
+    )
+    output_path = tmp_path / "out.jsonl"
+    code = main(["run", str(input_path), "--output", str(output_path), "--no-metrics"])
+    assert code == 0
+    rows = _lines(output_path.read_text())
+    assert rows[0]["prompt"] == "hi"
+
+
+def test_jsonl_custom_id_preserved(tmp_path):
+    input_path = _write(
+        tmp_path, "prompts.jsonl", json.dumps({"id": "custom-123", "prompt": "hi"})
+    )
+    output_path = tmp_path / "out.jsonl"
+    code = main(["run", str(input_path), "--output", str(output_path), "--no-metrics"])
+    assert code == 0
+    rows = _lines(output_path.read_text())
+    assert rows[0]["id"] == "custom-123"
+
+
+def test_jsonl_unicode_round_trips(tmp_path):
+    prompt = "你好世界 \U0001f600 café"
+    input_path = _write(
+        tmp_path, "prompts.jsonl", json.dumps({"prompt": prompt}, ensure_ascii=False)
+    )
+    output_path = tmp_path / "out.jsonl"
+    code = main(["run", str(input_path), "--output", str(output_path), "--no-metrics"])
+    assert code == 0
+    rows = _lines(output_path.read_text())
+    assert rows[0]["prompt"] == prompt
+
+
+def test_empty_jsonl_file_is_rejected_cleanly(tmp_path, capsys):
+    input_path = _write(tmp_path, "prompts.jsonl", "")
+    code = main(["run", str(input_path)])
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "empty" in err
+    assert "Traceback" not in err
+
+
+def test_jsonl_blank_lines_only_is_rejected_as_empty(tmp_path, capsys):
+    input_path = _write(tmp_path, "prompts.jsonl", "\n\n\n")
+    code = main(["run", str(input_path)])
+    assert code == 2
+    assert "empty" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# txt edge cases
+# --------------------------------------------------------------------------
+
+
+def test_txt_crlf_trailing_newline_and_blank_lines(tmp_path):
+    input_path = _write(
+        tmp_path, "prompts.txt", "first\r\n\r\nsecond\r\n\r\n\r\nthird\r\n"
+    )
+    output_path = tmp_path / "out.jsonl"
+    code = main(["run", str(input_path), "--output", str(output_path), "--no-metrics"])
+    assert code == 0
+    rows = _lines(output_path.read_text())
+    assert [r["prompt"] for r in rows] == ["first", "second", "third"]
+
+
+# --------------------------------------------------------------------------
+# --store / --resume
+# --------------------------------------------------------------------------
+
+
+def test_resume_when_everything_already_done_does_not_call_provider_again(
+    tmp_path, monkeypatch
+):
+    from llm_gateway.providers.mock import MockClient
+
+    input_path = _write(
+        tmp_path,
+        "prompts.jsonl",
+        "\n".join(json.dumps({"prompt": p}) for p in ["a", "b"]),
+    )
+    store_path = tmp_path / "store.db"
+    output_path = tmp_path / "out.jsonl"
+
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--no-metrics",
+            "--store",
+            str(store_path),
+        ]
+    )
+    assert code == 0
+
+    calls = {"n": 0}
+    original_complete = MockClient.complete
+
+    async def counting_complete(self, request):
+        calls["n"] += 1
+        return await original_complete(self, request)
+
+    monkeypatch.setattr(MockClient, "complete", counting_complete)
+
+    output_path2 = tmp_path / "out2.jsonl"
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--output",
+            str(output_path2),
+            "--no-metrics",
+            "--store",
+            str(store_path),
+            "--resume",
+        ]
+    )
+    assert code == 0
+    assert calls["n"] == 0, "resume after everything is done must not call the provider"
+    rows = _lines(output_path2.read_text())
+    assert [r["prompt"] for r in rows] == ["a", "b"]
+
+
+def test_store_without_resume_on_existing_file_is_rejected(tmp_path):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "a"}))
+    store_path = tmp_path / "store.db"
+
+    code = main(["run", str(input_path), "--no-metrics", "--store", str(store_path)])
+    assert code == 0
+
+    code = main(["run", str(input_path), "--no-metrics", "--store", str(store_path)])
+    assert code == 2
+
+
+# --------------------------------------------------------------------------
+# Ctrl-C / interruption mid-run
+# --------------------------------------------------------------------------
