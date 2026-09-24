@@ -139,6 +139,23 @@ written when a run finishes, but the store keeps every completed prompt as
 it goes. The hash does not include the provider name, so resuming with a
 different `--provider` but the same model reuses the stored answers.
 
+## Troubleshooting
+
+- **401 from a provider:** the API key is missing or wrong. The CLI reads
+  `GROQ_API_KEY` or `OPENROUTER_API_KEY`; auth errors are not retried.
+- **Model not found (Groq 404, OpenRouter 400):** providers retire models
+  often. `llm-gateway models --provider groq` lists the ones that exist
+  right now.
+- **Empty `text` with `finish_reason: "length"`:** a reasoning model spent
+  all of `max_tokens` thinking before writing an answer. Raise
+  `--max-tokens` or pick a non-reasoning model; `was_truncated` is set on
+  the response so this is not mistaken for a real empty answer.
+- **OpenRouter 404 "No endpoints found":** you asked for a capability such
+  as logprobs that no provider behind that model supports. This is
+  deliberate; the request fails instead of silently dropping the feature.
+- **Many 429s on a provider without rate-limit headers (OpenRouter):** set
+  `--rpm` lower, or add `--adaptive` so the rate backs off on its own.
+
 ## Does it actually help?
 
 Measured against a simulated server enforcing 190 requests/minute, 200 prompts,
