@@ -3,6 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/aiollm-gateway)](https://pypi.org/project/aiollm-gateway/)
 [![Python](https://img.shields.io/pypi/pyversions/aiollm-gateway)](https://pypi.org/project/aiollm-gateway/)
 [![CI](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Send 500 prompts to an LLM API without writing a single `sleep()`.**
 
@@ -10,12 +11,6 @@ An async Python layer that sits between your code and a provider's API. It
 paces requests under rate limits, retries what is worth retrying, groups
 prompts to cut round trips, and moves traffic off a provider that starts
 failing.
-
-[![CI](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Yashwanth-Nallapuneni/llm-gateway/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/Yashwanth-Nallapuneni/llm-gateway/branch/main/graph/badge.svg)](https://codecov.io/gh/Yashwanth-Nallapuneni/llm-gateway)
-[![PyPI](https://img.shields.io/pypi/v/aiollm-gateway.svg)](https://pypi.org/project/aiollm-gateway/)
-[![Python](https://img.shields.io/pypi/pyversions/aiollm-gateway.svg)](https://pypi.org/project/aiollm-gateway/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Python 3.11+, asyncio, **zero runtime dependencies**. Not a proxy, not a
 server, no caching or prompt management.
