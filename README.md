@@ -99,6 +99,12 @@ Python). `--metrics-json PATH` writes a machine-readable snapshot of the
 run's metrics (`MetricsSink.to_dict()`) alongside the usual human-readable
 report.
 
+`llm-gateway models --provider groq` (or `openrouter`) prints the model IDs
+that provider currently offers, one per line and sorted, straight from its
+`GET /models` endpoint (`--contains TEXT` filters by substring) -- useful
+since Groq in particular retires models often and a hardcoded default can
+go stale.
+
 ### Adaptive rate limiting
 
 `--adaptive` (or `LLMGateway(..., adaptive=True)` from Python) is for
@@ -269,6 +275,9 @@ Your client needs one method, `async complete(request) -> LLMResponse`, plus
 complete worked example.
 
 ## Architecture
+
+For a step-by-step walk through one request and a map of every file, see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```
    caller ──submit()──▶ LLMGateway

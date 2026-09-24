@@ -25,6 +25,10 @@ All notable changes to this project are documented in this file, in
   machine-readable metrics snapshot alongside the human-readable report.
 - CLI progress line on stderr during a run, and
   `examples/timeouts_and_adaptive.py`.
+- `llm-gateway models --provider groq|openrouter [--contains TEXT]` lists
+  the live model IDs a provider currently offers, sorted, via
+  `OpenAICompatibleClient.list_models()` (GET `{base_url}/models`) — a way
+  to find a model that hasn't been retired since a default was picked.
 
 ### Fixed
 

@@ -781,3 +781,40 @@ async def test_user_supplied_on_headers_is_chained_not_replaced():
 
     assert seen, "user callback was not called"
     assert provider.limiter.requests.available == pytest.approx(2, abs=0.01)
+
+
+# --------------------------------------------------------------------------
+# list_models
+# --------------------------------------------------------------------------
+
+
+async def test_list_models_parses_and_sorts():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/models"
+        return httpx.Response(
+            200, json={"data": [{"id": "z-model"}, {"id": "a-model"}, {"id": "m-model"}]}
+        )
+
+    http_client = make_client(handler)
+    client = OpenAICompatibleClient(
+        base_url="https://example.test/v1", api_key="k", model="m", client=http_client
+    )
+    assert await client.list_models() == ["a-model", "m-model", "z-model"]
+    await client.aclose()
+
+
+async def test_list_models_auth_error_maps_to_provider_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "invalid api key"}})
+
+    http_client = make_client(handler)
+    client = OpenAICompatibleClient(
+        base_url="https://example.test/v1",
+        api_key="bad-key",
+        model="m",
+        client=http_client,
+    )
+    with pytest.raises(ProviderError) as excinfo:
+        await client.list_models()
+    assert excinfo.value.status == 401
+    await client.aclose()

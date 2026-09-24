@@ -524,6 +524,46 @@ async def run_gateway(
 
 
 # --------------------------------------------------------------------------
+# models
+# --------------------------------------------------------------------------
+
+
+async def _list_models(provider: str, api_key: str) -> list[str]:
+    """Return the live model IDs a provider currently offers, sorted."""
+    if provider == "mock":
+        return ["mock"]
+    from . import groq_provider, openrouter_provider
+    from .providers.http import OpenAICompatibleClient
+
+    if provider == "groq":
+        prov = groq_provider(api_key)
+    else:
+        prov = openrouter_provider(api_key, model="placeholder")
+    client = prov.client
+    assert isinstance(client, OpenAICompatibleClient)
+    try:
+        return await client.list_models()
+    finally:
+        await client.aclose()
+
+
+def _models_command(args: argparse.Namespace, out: TextIO) -> int:
+    if args.provider == "mock":
+        api_key = ""
+    else:
+        env_var = _ENV_VAR_FOR_PROVIDER[args.provider]
+        api_key = os.environ.get(env_var, "")
+        if not api_key:
+            raise CliError(f"no API key for provider {args.provider!r}: set {env_var}")
+    models = asyncio.run(_list_models(args.provider, api_key))
+    if args.contains is not None:
+        models = [m for m in models if args.contains in m]
+    for model in models:
+        print(model, file=out)
+    return 0
+
+
+# --------------------------------------------------------------------------
 # argparse
 # --------------------------------------------------------------------------
 
@@ -651,6 +691,19 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    models = subparsers.add_parser(
+        "models", help="List the model IDs a provider currently offers."
+    )
+    models.add_argument(
+        "--provider",
+        required=True,
+        choices=PROVIDER_CHOICES,
+        help="Which provider to query.",
+    )
+    models.add_argument(
+        "--contains", default=None, help="Only print model IDs containing this substring."
+    )
+
     return parser
 
 
@@ -765,6 +818,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         except KeyboardInterrupt:
             print("llm-gateway: interrupted", file=sys.stderr)
+            return 2
+
+    if args.command == "models":
+        try:
+            return _models_command(args, sys.stdout)
+        except CliError as exc:
+            print(f"llm-gateway: error: {exc}", file=sys.stderr)
             return 2
 
     parser.error(f"unknown command {args.command!r}")  # argparse.error exits the process

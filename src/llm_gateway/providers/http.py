@@ -300,6 +300,26 @@ class OpenAICompatibleClient:
         """
         return [await self.complete(r) for r in requests]
 
+    async def list_models(self) -> list[str]:
+        """Return the model IDs this provider currently offers, sorted.
+
+        Hits the OpenAI-compatible GET {base_url}/models endpoint, which
+        Groq and OpenRouter both expose as {"data": [{"id": ...}, ...]}.
+        """
+        try:
+            response = await self._client.get("/models")
+        except httpx.TimeoutException as exc:
+            raise ProviderError(
+                f"request timed out: {exc}", status=None, provider=self.provider_name
+            ) from exc
+        except httpx.TransportError as exc:
+            raise ProviderError(
+                f"transport error: {exc}", status=None, provider=self.provider_name
+            ) from exc
+        self._raise_for_status(response)
+        body = response.json()
+        return sorted(item["id"] for item in body.get("data") or [])
+
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()

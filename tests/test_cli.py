@@ -530,3 +530,41 @@ def test_adaptive_defaults_to_false(tmp_path, monkeypatch):
 
     assert code == 0
     assert seen["adaptive"] is False
+
+
+# --------------------------------------------------------------------------
+# models command
+# --------------------------------------------------------------------------
+
+
+def test_models_command_mock(capsys):
+    code = main(["models", "--provider", "mock"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.splitlines() == ["mock"]
+
+
+def test_models_command_prints_sorted_ids_and_filters(monkeypatch, capsys):
+    import llm_gateway.cli as cli_module
+
+    async def fake_list_models(provider, api_key):
+        assert api_key == "test-key"
+        return ["a-model", "allam-2-7b", "z-model"]
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(cli_module, "_list_models", fake_list_models)
+
+    code = main(["models", "--provider", "groq"])
+    assert code == 0
+    assert capsys.readouterr().out.splitlines() == ["a-model", "allam-2-7b", "z-model"]
+
+    code = main(["models", "--provider", "groq", "--contains", "allam"])
+    assert code == 0
+    assert capsys.readouterr().out.splitlines() == ["allam-2-7b"]
+
+
+def test_models_command_missing_api_key_exits_2(monkeypatch, capsys):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    code = main(["models", "--provider", "groq"])
+    assert code == 2
+    assert "GROQ_API_KEY" in capsys.readouterr().err
