@@ -190,3 +190,30 @@ async def test_budget_runs_out_and_capabilities_are_mixed(
     counts = await store.counts()
     assert counts.get("in_flight", 0) == 0
     await store.aclose()
+
+
+async def test_every_provider_down_fails_fast_without_hanging() -> None:
+    # Both providers fail every call, so their breakers open. Every caller
+    # must get an error rather than wait, and quickly.
+    providers = [
+        MockProvider(
+            name,
+            client=MockClient(name=name, latency=0.001, fail_sequence=[500] * 10_000),
+            failure_threshold=2,
+        )
+        for name in ("down1", "down2")
+    ]
+    gw = LLMGateway(providers=providers, retry=fast_retry())
+
+    async def submit_one(i: int) -> object:
+        try:
+            return await gw.submit(LLMRequest(f"prompt-{i}"))
+        except (ProviderError, GatewayError) as exc:
+            return exc
+
+    async with gw:
+        results = await asyncio.wait_for(
+            asyncio.gather(*(submit_one(i) for i in range(N_REQUESTS))), timeout=10.0
+        )
+    assert len(results) == N_REQUESTS
+    assert not any(isinstance(r, LLMResponse) for r in results)
