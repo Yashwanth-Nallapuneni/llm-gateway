@@ -374,8 +374,8 @@ async def run_gateway(
     providers: list[Provider],
     items: list[PromptItem],
     args: argparse.Namespace,
-) -> tuple[list[dict[str, Any]], bool, str]:
-    """Drive every prompt through the gateway. Returns (rows, any_failed, report)."""
+) -> tuple[list[dict[str, Any]], bool, str, dict[str, Any]]:
+    """Drive every prompt through the gateway. Returns (rows, any_failed, report, metrics)."""
     batcher = Batcher(
         **_no_none(max_batch_size=args.batch_size, max_wait_ms=args.max_wait_ms)
     )
@@ -432,6 +432,7 @@ async def run_gateway(
         if store is not None:
             await store.aclose()
 
+    metrics_dict = gateway.metrics.to_dict()
     report = gateway.metrics.report()
     if store is not None:
         report += (
@@ -447,7 +448,7 @@ async def run_gateway(
                 f"; {budget_skipped} of {len(items)} prompt(s) skipped "
                 "(budget exceeded)"
             )
-    return rows, any_failed, report
+    return rows, any_failed, report, metrics_dict
 
 
 # --------------------------------------------------------------------------
@@ -533,6 +534,13 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--limit", type=int, default=None, help="Only process the first N prompts.")
     run.add_argument("--quiet", action="store_true", help="Suppress progress/guard chatter on stderr.")
     run.add_argument("--no-metrics", action="store_true", help="Do not print the metrics report.")
+    run.add_argument(
+        "--metrics-json",
+        default=None,
+        dest="metrics_json",
+        metavar="PATH",
+        help="Write a machine-readable metrics snapshot (JSON) to PATH.",
+    )
     run.add_argument("--dry-run", action="store_true", help="Parse and estimate only; no calls.")
     run.add_argument("--yes", action="store_true", help="Skip the cost confirmation prompt.")
     run.add_argument(
@@ -624,7 +632,7 @@ def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     if not args.quiet:
         print(f"running {len(items)} prompt(s) through {','.join(provider_names)}...", file=err)
 
-    rows, any_failed, report = asyncio.run(run_gateway(providers, items, args))
+    rows, any_failed, report, metrics_dict = asyncio.run(run_gateway(providers, items, args))
 
     if args.output is None or args.output == "-":
         for row in rows:
@@ -633,6 +641,10 @@ def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         with open(args.output, "w", encoding="utf-8") as output_stream:
             for row in rows:
                 output_stream.write(json.dumps(row) + "\n")
+
+    if args.metrics_json is not None:
+        with open(args.metrics_json, "w", encoding="utf-8") as metrics_stream:
+            json.dump(metrics_dict, metrics_stream)
 
     if not args.no_metrics:
         print(report, file=err)

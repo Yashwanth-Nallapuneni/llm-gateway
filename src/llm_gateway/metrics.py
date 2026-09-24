@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from typing import Any
 
 
 def _percentile(values: list[float], p: float) -> float:
@@ -80,14 +81,50 @@ class MetricsSink:
             h.update(m.batch_sizes)
         return h
 
+    def to_dict(self) -> dict[str, Any]:
+        """Plain JSON-serialisable snapshot of everything report() shows."""
+        providers: dict[str, Any] = {}
+        for name, m in sorted(self._providers.items()):
+            providers[name] = {
+                "succeeded": m.succeeded,
+                "failed": m.failed,
+                "retries": m.retries,
+                "failures_by_class": dict(m.failures_by_class),
+                "blocked_seconds": m.blocked_seconds,
+                "cost": m.cost,
+                "latency_p50": _percentile(m.latencies, 50),
+                "latency_p95": _percentile(m.latencies, 95),
+                "latency_p99": _percentile(m.latencies, 99),
+                "batch_sizes": list(m.batch_sizes),
+            }
+
+        failures: Counter[str] = Counter()
+        for m in self._providers.values():
+            failures.update(m.failures_by_class)
+
+        hist = self.batch_histogram()
+        total_reqs = sum(s * c for s, c in hist.items())
+        total_batches = sum(hist.values())
+
+        return {
+            "submitted": self.submitted,
+            "completed": self.completed,
+            "rejected": self.rejected,
+            "providers": providers,
+            "failures_by_class": dict(sorted(failures.items())),
+            "batch_histogram": {str(k): v for k, v in sorted(hist.items())},
+            "mean_batch_size": total_reqs / total_batches if total_batches else 0.0,
+        }
+
     def report(self) -> str:
+        d = self.to_dict()
         lines: list[str] = []
         lines.append("=" * 78)
         lines.append("LLM GATEWAY METRICS")
         lines.append("=" * 78)
         lines.append(
-            f"submitted={self.submitted}  completed={self.completed}  "
-            f"rejected={self.rejected}"
+            f"submitted={d['submitted']}  completed={d['completed']}  "
+            f"rejected={d['rejected']}"
         )
         lines.append("")
         header = (
@@ -96,38 +133,34 @@ class MetricsSink:
         )
         lines.append(header)
         lines.append("-" * len(header))
-        for name, m in sorted(self._providers.items()):
+        for name, p in d["providers"].items():
             lines.append(
-                f"{name:<14}{m.succeeded:>6}{m.failed:>6}{m.retries:>7}"
-                f"{_percentile(m.latencies, 50):>9.3f}"
-                f"{_percentile(m.latencies, 95):>9.3f}"
-                f"{_percentile(m.latencies, 99):>9.3f}"
-                f"{m.blocked_seconds:>10.2f}"
-                f"{m.cost:>10.4f}"
+                f"{name:<14}{p['succeeded']:>6}{p['failed']:>6}{p['retries']:>7}"
+                f"{p['latency_p50']:>9.3f}"
+                f"{p['latency_p95']:>9.3f}"
+                f"{p['latency_p99']:>9.3f}"
+                f"{p['blocked_seconds']:>10.2f}"
+                f"{p['cost']:>10.4f}"
             )
 
-        failures: Counter[str] = Counter()
-        for m in self._providers.values():
-            failures.update(m.failures_by_class)
-        if failures:
+        if d["failures_by_class"]:
             lines.append("")
             lines.append("failures by class: " + ", ".join(
-                f"{k}={v}" for k, v in sorted(failures.items())
+                f"{k}={v}" for k, v in d["failures_by_class"].items()
             ))
 
-        hist = self.batch_histogram()
+        hist = d["batch_histogram"]
         if hist:
             lines.append("")
             lines.append("batch size distribution")
             widest = max(hist.values())
-            for size in sorted(hist):
+            for size in sorted(hist, key=int):
                 count = hist[size]
                 bar = "#" * max(1, int(40 * count / widest))
                 lines.append(f"  {size:>3} | {bar} {count}")
-            total_reqs = sum(s * c for s, c in hist.items())
             total_batches = sum(hist.values())
             lines.append(
-                f"  mean batch size: {total_reqs / total_batches:.2f} "
+                f"  mean batch size: {d['mean_batch_size']:.2f} "
                 f"over {total_batches} dispatches"
             )
         lines.append("=" * 78)
