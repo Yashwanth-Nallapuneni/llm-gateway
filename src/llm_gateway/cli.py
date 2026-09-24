@@ -19,7 +19,8 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, TextIO
 
@@ -370,10 +371,57 @@ async def _submit_one(
         return item, None, exc
 
 
+class _Progress:
+    """A single self-overwriting progress line on stderr.
+
+    Only active when stderr is a real terminal -- writing carriage-return
+    updates to a file or a pipe would just leave junk in the output, so this
+    is a no-op whenever `stream.isatty()` is false. Updates are throttled to
+    a few times a second so a fast run doesn't spend its time repainting a
+    line no one can read anyway.
+    """
+
+    def __init__(self, stream: TextIO, total: int, *, clock: Callable[[], float] | None = None) -> None:
+        self._clock = clock or time.monotonic
+        self.stream = stream
+        self.total = total
+        self.enabled = stream.isatty()
+        self.ok = 0
+        self.failed = 0
+        self._started = self._clock()
+        self._last_shown = 0.0
+
+    def update(self, *, ok: bool) -> None:
+        if ok:
+            self.ok += 1
+        else:
+            self.failed += 1
+        if not self.enabled:
+            return
+        now = self._clock()
+        done = self.ok + self.failed
+        if now - self._last_shown < 0.2 and done < self.total:
+            return
+        self._last_shown = now
+        width = len(str(self.total))
+        elapsed = now - self._started
+        self.stream.write(
+            f"\r[{done:>{width}}/{self.total}] ok {self.ok}  failed {self.failed}  "
+            f"elapsed {elapsed:.1f}s"
+        )
+        self.stream.flush()
+
+    def finish(self) -> None:
+        if self.enabled:
+            self.stream.write("\n")
+            self.stream.flush()
+
+
 async def run_gateway(
     providers: list[Provider],
     items: list[PromptItem],
     args: argparse.Namespace,
+    err: TextIO = sys.stderr,
 ) -> tuple[list[dict[str, Any]], bool, str, dict[str, Any]]:
     """Drive every prompt through the gateway. Returns (rows, any_failed, report, metrics)."""
     batcher = Batcher(
@@ -398,7 +446,12 @@ async def run_gateway(
         )
 
     gateway = LLMGateway(
-        providers=providers, batcher=batcher, retry=retry, store=store, budget=budget
+        providers=providers,
+        batcher=batcher,
+        retry=retry,
+        store=store,
+        budget=budget,
+        adaptive=args.adaptive,
     )
 
     # Every prompt gets a row in `rows` no matter how the run ends: a
@@ -410,12 +463,22 @@ async def run_gateway(
     rows: list[dict[str, Any]] = []
     any_failed = False
     budget_skipped = 0
+    progress = _Progress(err, len(items)) if not args.quiet else None
+
+    async def _submit_and_track(
+        item: PromptItem, req: LLMRequest
+    ) -> tuple[PromptItem, LLMResponse | None, BaseException | None]:
+        result = await _submit_one(gateway, item, req)
+        if progress is not None:
+            progress.update(ok=result[2] is None)
+        return result
+
     try:
         async with gateway:
             requests = [build_request(item, args) for item in items]
             results = await asyncio.gather(
                 *(
-                    _submit_one(gateway, item, req)
+                    _submit_and_track(item, req)
                     for item, req in zip(items, requests, strict=True)
                 )
             )
@@ -429,6 +492,8 @@ async def run_gateway(
                     assert resp is not None
                     rows.append(_response_to_dict(item, resp))
     finally:
+        if progress is not None:
+            progress.finish()
         if store is not None:
             await store.aclose()
 
@@ -503,6 +568,14 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--tpm", type=float, default=None)
     run.add_argument("--max-concurrency", type=int, default=None, dest="max_concurrency")
     run.add_argument("--max-attempts", type=int, default=None, dest="max_attempts")
+    run.add_argument(
+        "--adaptive",
+        action="store_true",
+        help=(
+            "Halve the request rate after a 429 and recover slowly; useful "
+            "for providers without rate-limit headers such as OpenRouter."
+        ),
+    )
     run.add_argument(
         "--timeout",
         type=float,
@@ -632,7 +705,9 @@ def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     if not args.quiet:
         print(f"running {len(items)} prompt(s) through {','.join(provider_names)}...", file=err)
 
-    rows, any_failed, report, metrics_dict = asyncio.run(run_gateway(providers, items, args))
+    rows, any_failed, report, metrics_dict = asyncio.run(
+        run_gateway(providers, items, args, err)
+    )
 
     if args.output is None or args.output == "-":
         for row in rows:

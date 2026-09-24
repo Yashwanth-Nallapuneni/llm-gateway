@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import sys
 
 import pytest
 
@@ -393,3 +395,119 @@ def test_single_provider_still_works_unchanged(tmp_path):
     rows = _lines(output_path.read_text())
     assert len(rows) == 3
     assert all(r["provider"] == "mock" for r in rows)
+
+
+# --------------------------------------------------------------------------
+# progress line
+# --------------------------------------------------------------------------
+
+
+class _TTYStringIO(io.StringIO):
+    """A StringIO that claims to be a terminal, for progress-line tests."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_progress_not_printed_when_stderr_is_not_a_tty(tmp_path, capsys):
+    input_path = _write(
+        tmp_path, "prompts.jsonl", "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5))
+    )
+
+    code = main(["run", str(input_path), "--output", str(tmp_path / "out.jsonl")])
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "\r" not in captured.err
+
+
+def test_progress_not_printed_with_quiet(tmp_path, monkeypatch):
+    input_path = _write(
+        tmp_path, "prompts.jsonl", "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5))
+    )
+    fake_err = _TTYStringIO()
+    monkeypatch.setattr(sys, "stderr", fake_err)
+
+    code = main(["run", str(input_path), "--output", str(tmp_path / "out.jsonl"), "--quiet"])
+
+    assert code == 0
+    assert "\r" not in fake_err.getvalue()
+
+
+def test_progress_printed_on_a_tty(tmp_path, monkeypatch):
+    input_path = _write(
+        tmp_path, "prompts.jsonl", "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5))
+    )
+    fake_err = _TTYStringIO()
+    monkeypatch.setattr(sys, "stderr", fake_err)
+
+    code = main(["run", str(input_path), "--output", str(tmp_path / "out.jsonl")])
+
+    assert code == 0
+    output = fake_err.getvalue()
+    assert "\r" in output
+    assert "ok" in output
+    assert "failed" in output
+    # final update always lands, even with the 0.2s throttle
+    assert "[5/5]" in output
+
+
+def test_progress_does_not_pollute_stdout(tmp_path, capsys):
+    input_path = _write(
+        tmp_path, "prompts.jsonl", "\n".join(json.dumps({"prompt": f"p{i}"}) for i in range(5))
+    )
+
+    code = main(["run", str(input_path), "--no-metrics"])
+
+    assert code == 0
+    captured = capsys.readouterr()
+    rows = _lines(captured.out)
+    assert len(rows) == 5
+    assert "\r" not in captured.out
+
+
+# --------------------------------------------------------------------------
+# --adaptive
+# --------------------------------------------------------------------------
+
+
+def test_adaptive_flag_is_wired_to_the_gateway(tmp_path, monkeypatch):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}))
+
+    seen = {}
+    from llm_gateway import cli as cli_module
+
+    real_gateway_cls = cli_module.LLMGateway
+
+    def spy_gateway(*args, **kwargs):
+        seen["adaptive"] = kwargs.get("adaptive")
+        return real_gateway_cls(*args, **kwargs)
+
+    monkeypatch.setattr(cli_module, "LLMGateway", spy_gateway)
+
+    code = main(
+        ["run", str(input_path), "--output", str(tmp_path / "out.jsonl"), "--adaptive", "--no-metrics"]
+    )
+
+    assert code == 0
+    assert seen["adaptive"] is True
+
+
+def test_adaptive_defaults_to_false(tmp_path, monkeypatch):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}))
+
+    seen = {}
+    from llm_gateway import cli as cli_module
+
+    real_gateway_cls = cli_module.LLMGateway
+
+    def spy_gateway(*args, **kwargs):
+        seen["adaptive"] = kwargs.get("adaptive")
+        return real_gateway_cls(*args, **kwargs)
+
+    monkeypatch.setattr(cli_module, "LLMGateway", spy_gateway)
+
+    code = main(["run", str(input_path), "--output", str(tmp_path / "out.jsonl"), "--no-metrics"])
+
+    assert code == 0
+    assert seen["adaptive"] is False
