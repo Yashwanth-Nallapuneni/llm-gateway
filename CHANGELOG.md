@@ -35,6 +35,12 @@ All notable changes to this project are documented in this file, in
   floor is unaffected either way). See `docs/LIVE_TESTING.md` for setup and
   the roughly half-cent-per-run cost.
 
+- `examples/resume_after_crash.py` and `examples/budget_ceiling.py`; every
+  example now runs as part of the test suite.
+- Usage examples at the end of `llm-gateway run --help`.
+- `docs/ARCHITECTURE.md` (a walk through one request and a map of every
+  file) and `CONTRIBUTING.md`.
+
 ### Fixed
 
 - `OpenRouterClient._raise_for_status` no longer notifies rate-limit headers
