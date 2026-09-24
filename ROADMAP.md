@@ -11,7 +11,7 @@ passes (live tests that call real provider APIs are deselected by default); CI r
 pytest, ruff (check and format) and mypy on Python 3.11-3.14 and
 builds/validates the package on every push and pull request. The package is
 published on PyPI as
-[`aiollm-gateway`](https://pypi.org/project/aiollm-gateway/) (v0.1.0,
+[`aiollm-gateway`](https://pypi.org/project/aiollm-gateway/) (latest v0.2.0,
 released via Trusted Publishing from a tagged GitHub Actions run).
 
 Providers: `MockProvider` (in-process, no network), `GroqProvider` and
