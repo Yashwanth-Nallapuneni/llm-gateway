@@ -193,9 +193,24 @@ def args_provider_hint(provider_names: list[str]) -> str:
     return "one of " + ", ".join(provider_names)
 
 
-def build_provider(name: str, args: argparse.Namespace, model: str | None) -> Provider:
+def build_provider(
+    name: str,
+    args: argparse.Namespace,
+    model: str | None,
+    *,
+    dry_run: bool = False,
+    multi: bool = False,
+) -> Provider:
     """Build a single provider by name, using that provider's own API key
-    env var and (optionally) its own model from --model."""
+    env var and (optionally) its own model from --model.
+
+    `dry_run` means no network call will ever be made for this provider (see
+    `--dry-run`), so a missing API key is not fatal -- a placeholder is used
+    instead, purely so the provider object can be built for cost estimation.
+    `multi` means more than one --provider was given, which changes what a
+    couple of error messages should say (--api-key doesn't apply, and
+    --model needs the name=value syntax).
+    """
     common = _no_none(
         rpm_limit=args.rpm,
         tpm_limit=args.tpm,
@@ -208,9 +223,14 @@ def build_provider(name: str, args: argparse.Namespace, model: str | None) -> Pr
     env_var = _ENV_VAR_FOR_PROVIDER[name]
     api_key = args.api_key or os.environ.get(env_var)
     if not api_key:
-        raise CliError(
-            f"no API key for provider {name!r}: set {env_var} or pass --api-key"
-        )
+        if dry_run:
+            api_key = "dry-run-placeholder"
+        elif multi:
+            raise CliError(f"no API key for provider {name!r}: set {env_var}")
+        else:
+            raise CliError(
+                f"no API key for provider {name!r}: set {env_var} or pass --api-key"
+            )
 
     try:
         from . import groq_provider, openrouter_provider
@@ -226,6 +246,11 @@ def build_provider(name: str, args: argparse.Namespace, model: str | None) -> Pr
 
     # openrouter
     if not model:
+        if multi:
+            raise CliError(
+                "--model is required for --provider openrouter; with multiple "
+                "providers use --model openrouter=<model id>"
+            )
         raise CliError("--model is required for --provider openrouter")
     built = openrouter_provider(api_key, model=model, **common)
     return built
@@ -258,7 +283,12 @@ def build_providers(args: argparse.Namespace) -> list[Provider]:
         )
 
     model_map = _parse_model_map(args.model, names)
-    return [build_provider(n, args, model_map.get(n)) for n in names]
+    multi = len(names) > 1
+    dry_run = getattr(args, "dry_run", False)
+    return [
+        build_provider(n, args, model_map.get(n), dry_run=dry_run, multi=multi)
+        for n in names
+    ]
 
 
 def build_request(item: PromptItem, args: argparse.Namespace) -> LLMRequest:

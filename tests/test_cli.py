@@ -158,6 +158,43 @@ def test_dry_run_shows_cost_for_paid_provider(tmp_path, monkeypatch, capsys):
     assert "test-key-value" not in captured.out
 
 
+def test_dry_run_works_without_api_key(tmp_path, monkeypatch, capsys):
+    """A dry run makes no network calls, so it must not require a key."""
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}))
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    code = main(["run", str(input_path), "--provider", "groq", "--dry-run"])
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "prompts: 1" in captured.err
+    assert "estimated cost" in captured.err
+    assert captured.out == ""
+
+
+def test_dry_run_works_without_api_key_multi_provider(tmp_path, monkeypatch, capsys):
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}))
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--provider",
+            "groq,openrouter",
+            "--model",
+            "openrouter=some/model",
+            "--dry-run",
+        ]
+    )
+
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "prompts: 1" in captured.err
+
+
 # --------------------------------------------------------------------------
 # missing API key
 # --------------------------------------------------------------------------
@@ -195,6 +232,47 @@ def test_missing_api_key_openrouter_exits_2(tmp_path, monkeypatch, capsys):
     assert code == 2
     captured = capsys.readouterr()
     assert "OPENROUTER_API_KEY" in captured.err
+
+
+def test_missing_api_key_multi_provider_does_not_mention_api_key_flag(
+    tmp_path, monkeypatch, capsys
+):
+    """With multiple providers, --api-key can't be used, so the missing-key
+    message should only point at the env var, not at the disallowed flag."""
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}))
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-value")
+
+    code = main(
+        [
+            "run",
+            str(input_path),
+            "--provider",
+            "groq,openrouter",
+            "--model",
+            "openrouter=some/model",
+        ]
+    )
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "GROQ_API_KEY" in captured.err
+    assert "--api-key" not in captured.err
+
+
+def test_missing_model_multi_provider_shows_multi_syntax(tmp_path, monkeypatch, capsys):
+    """--model is required for openrouter; with multiple providers the
+    message should show the name=value syntax, not the single-provider form."""
+    input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}))
+    monkeypatch.setenv("GROQ_API_KEY", "test-key-value")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-value")
+
+    code = main(["run", str(input_path), "--provider", "groq,openrouter"])
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "openrouter=<model id>" in captured.err
 
 
 # --------------------------------------------------------------------------

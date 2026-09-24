@@ -37,6 +37,11 @@ All notable changes to this project are documented in this file, in
 - Live benchmark: a cooldown now applies at every arm boundary, including
   across runs, and a run cut short by the live-call ceiling is excluded
   from the summary instead of averaged in.
+- CLI: `run --dry-run` no longer requires an API key, since a dry run makes
+  no network calls; the missing-API-key and missing-`--model` messages for
+  a multi-provider `--provider` list now match what's actually allowed in
+  that case (no mention of `--api-key`, and the `name=value` `--model`
+  syntax) instead of the single-provider wording.
 
 ## [0.1.0] - 2026-09-21
 
