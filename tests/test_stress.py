@@ -217,3 +217,40 @@ async def test_every_provider_down_fails_fast_without_hanging() -> None:
         )
     assert len(results) == N_REQUESTS
     assert not any(isinstance(r, LLMResponse) for r in results)
+
+
+async def test_providers_recover_under_load() -> None:
+    # Each provider fails its first calls and trips its breaker. While both
+    # are open, callers get a fast error (that is the point of a breaker).
+    # Once the failures stop, the breakers must close again rather than get
+    # stuck half-open, and a second wave of traffic must fully succeed.
+    providers = [
+        MockProvider(
+            name,
+            client=MockClient(name=name, latency=0.002, fail_sequence=[500] * 6),
+            failure_threshold=2,
+            recovery_timeout=0.05,
+        )
+        for name in ("p1", "p2")
+    ]
+    gw = LLMGateway(providers=providers, retry=fast_retry())
+
+    async def submit_one(i: int) -> object:
+        try:
+            return await gw.submit(LLMRequest(f"prompt-{i}"))
+        except (ProviderError, GatewayError) as exc:
+            return exc
+
+    async with gw:
+        # First wave: keep sending until both providers have recovered.
+        for _ in range(100):
+            await asyncio.wait_for(submit_one(0), timeout=5.0)
+            if all(p.breaker.state.value == "closed" for p in providers):
+                break
+            await asyncio.sleep(0.01)
+        assert all(p.breaker.state.value == "closed" for p in providers)
+
+        second_wave = await asyncio.wait_for(
+            asyncio.gather(*(submit_one(i) for i in range(N_REQUESTS))), timeout=10.0
+        )
+    assert all(isinstance(r, LLMResponse) for r in second_wave)
