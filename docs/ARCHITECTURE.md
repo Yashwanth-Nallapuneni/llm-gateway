@@ -25,7 +25,14 @@ Call `gateway.submit(request)` (`LLMGateway.submit` in
    future.
 
 3. **Dispatcher loop.** A background task, `LLMGateway._loop` in
-   `gateway.py`, repeatedly calls `self.batcher.collect(self.queue)`.
+   `gateway.py`, repeatedly calls `self.batcher.collect(self.queue)`. If
+   `_dispatch` raises an exception nobody anticipated (a bug, not one of the
+   provider/budget/routing failure paths it already handles), it is caught
+   and passed to `_fail_batch` so every future in the batch still resolves
+   instead of hanging. `LLMGateway.aclose()` cancels the dispatcher and
+   worker tasks and then fails everything still sitting in the queue with a
+   `GatewayError`, so a `submit()` awaiting one of those futures does not
+   hang forever either.
 
 4. **Batcher.** `Batcher.collect` in `src/llm_gateway/batching.py` blocks for
    the first request, then keeps pulling more from the queue until the batch
@@ -47,7 +54,10 @@ Call `gateway.submit(request)` (`LLMGateway.submit` in
    excluded providers with an open breaker; on a retry within the same
    provider, `_call_with_retry` in `gateway.py` also calls
    `provider.breaker.check()` before each attempt after the first, which
-   raises `CircuitOpenError` if the provider tripped mid-retry.
+   raises `CircuitOpenError` if the provider tripped mid-retry. Ranking a
+   half-open candidate reserves its one probe slot; if the batch never
+   reaches that candidate, `_dispatch` calls `breaker.release_probe()` on it
+   so the slot isn't wasted.
 
 7. **Rate limiter.** Still inside `_call_with_retry`, the gateway awaits
    `provider.limiter.acquire(len(requests), n_tokens)`. `ProviderLimiter` in
@@ -57,7 +67,9 @@ Call `gateway.submit(request)` (`LLMGateway.submit` in
    counts from the provider's own `x-ratelimit-*` headers, and if the
    gateway was built with `adaptive=True`, `on_throttled()` /
    `on_success()` halve or nudge up the request bucket's rate (AIMD) for
-   providers that send no headers at all.
+   providers that send no headers at all; `_dispatch` calls
+   `on_throttled()` at most once per rejected batch, not once per request
+   in it.
 
 8. **Provider HTTP call.** `Provider.complete` / `Provider.complete_batch_settled`
    in `providers/base.py` acquire a concurrency slot
@@ -77,8 +89,10 @@ Call `gateway.submit(request)` (`LLMGateway.submit` in
 
 10. **Store / budget settle.** On success, if a `BudgetLedger`
     (`src/llm_gateway/budget.py`) reservation was made for this request
-    before dispatch, it is settled with the real cost
-    (`reservation.settle`). If a `RunStore` is in use, the outer
+    before dispatch, it is settled with the real cost (`reservation.settle`,
+    which validates `actual_usd`/`actual_tokens` before closing the
+    reservation, so a bad value leaves it open and still releasable). If a
+    `RunStore` is in use, the outer
     `_submit_with_store` calls `store.complete(key, response, cost=...)` to
     durably record the answer (or `store.fail` on an exception).
 
@@ -88,8 +102,12 @@ Call `gateway.submit(request)` (`LLMGateway.submit` in
 
 12. **Response.** The entry's `asyncio.Future` is resolved with the
     `LLMResponse`, and `submit()`'s `await entry.future` returns it to the
-    caller (subject to `request.timeout_s`, enforced with
-    `asyncio.wait_for` around the whole path).
+    caller. When `request.timeout_s` is set, `submit()` runs the whole path
+    above as a separate task and waits on it with
+    `asyncio.wait_for(asyncio.shield(task), timeout_s)`; the shield means a
+    timeout only stops the caller from waiting, the task itself keeps
+    running in the background so the store and budget bookkeeping still
+    complete, and `submit()` raises `RequestTimeout` instead of returning.
 
 ## Diagram
 
