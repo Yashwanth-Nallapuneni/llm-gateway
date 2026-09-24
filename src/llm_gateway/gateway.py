@@ -26,6 +26,7 @@ from .types import (
     NoEligibleProviderError,
     ProviderError,
     QueuedRequest,
+    RequestTimeout,
 )
 
 
@@ -152,9 +153,26 @@ class LLMGateway:
         return self._fatal
 
     async def submit(self, request: LLMRequest) -> LLMResponse:
-        if self.store is not None:
-            return await self._submit_with_store(self.store, request)
-        return await self._submit_uncached(request)
+        coro = (
+            self._submit_with_store(self.store, request)
+            if self.store is not None
+            else self._submit_uncached(request)
+        )
+        if request.timeout_s is None:
+            return await coro
+        try:
+            # wait_for cancels `coro` on timeout. If it was suspended on
+            # `await entry.future` (in _submit_uncached), that cancellation
+            # propagates to the future itself, so the dispatcher's later
+            # `if not entry.future.done()` checks skip it -- but the
+            # dispatch loop keeps running regardless of the future's state,
+            # so a reservation held for this request is still settled or
+            # released exactly as it would be without a timeout.
+            return await asyncio.wait_for(coro, request.timeout_s)
+        except TimeoutError:
+            raise RequestTimeout(
+                f"request timed out after {request.timeout_s}s"
+            ) from None
 
     async def _submit_with_store(self, store: RunStore, request: LLMRequest) -> LLMResponse:
         """Store-backed path: check first, reserve, call, then durably

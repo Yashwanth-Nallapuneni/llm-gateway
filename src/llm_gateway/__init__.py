@@ -25,6 +25,7 @@ from .types import (
     ProviderError,
     QueuedRequest,
     RateLimitError,
+    RequestTimeout,
 )
 
 __version__ = "0.1.0"
@@ -55,6 +56,7 @@ __all__ = [
     "QueuedRequest",
     "RateLimitError",
     "RequestQueue",
+    "RequestTimeout",
     "Reservation",
     "RetryPolicy",
     "RunStore",

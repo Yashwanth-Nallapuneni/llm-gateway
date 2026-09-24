@@ -272,6 +272,8 @@ def build_request(item: PromptItem, args: argparse.Namespace) -> LLMRequest:
         kwargs["needs_logprobs"] = item.needs_logprobs
     if item.needs_strict_json is not None:
         kwargs["needs_strict_json"] = item.needs_strict_json
+    if args.timeout is not None:
+        kwargs["timeout_s"] = args.timeout
     return LLMRequest(**kwargs)
 
 
@@ -500,6 +502,13 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--tpm", type=float, default=None)
     run.add_argument("--max-concurrency", type=int, default=None, dest="max_concurrency")
     run.add_argument("--max-attempts", type=int, default=None, dest="max_attempts")
+    run.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Overall per-prompt timeout in seconds, including queueing and retries.",
+    )
     run.add_argument(
         "--budget",
         type=float,

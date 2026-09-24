@@ -27,6 +27,10 @@ class LLMRequest:
     needs_strict_json: bool = False
     priority: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Overall wall-clock budget for this request, covering queueing, batching,
+    # rate-limit waits and every retry -- not just one HTTP call. None (the
+    # default) means wait forever, exactly like before this field existed.
+    timeout_s: float | None = None
 
     def estimated_input_tokens(self) -> int:
         """Cheap heuristic: ~4 characters per token.
@@ -157,6 +161,15 @@ class NoEligibleProviderError(GatewayError):
 
 class CircuitOpenError(ProviderError):
     """The breaker rejected the call without touching the provider."""
+
+
+class RequestTimeout(GatewayError):
+    """`request.timeout_s` elapsed before a final result was ready.
+
+    The underlying dispatch (queueing, batching, retries) is not aborted by
+    this -- it keeps running in the background and still settles or releases
+    any budget reservation it holds; only the caller stops waiting for it.
+    """
 
 
 # --------------------------------------------------------------------------
