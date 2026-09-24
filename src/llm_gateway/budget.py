@@ -113,6 +113,12 @@ class Reservation:
         """
         if self._closed:
             raise RuntimeError("reservation already settled or released")
+        # Check the inputs before changing anything, so a bad value leaves
+        # the reservation open and still releasable.
+        if actual_usd < 0:
+            raise ValueError(f"actual_usd must be >= 0, got {actual_usd}")
+        if actual_tokens is not None and actual_tokens < 0:
+            raise ValueError(f"actual_tokens must be >= 0, got {actual_tokens}")
         self._closed = True
         self._ledger._settle(self, actual_usd, actual_tokens)
 
