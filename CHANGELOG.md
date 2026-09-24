@@ -54,9 +54,9 @@ All notable changes to this project are documented in this file, in
   that case (no mention of `--api-key`, and the `name=value` `--model`
   syntax) instead of the single-provider wording.
 - `aclose()` no longer leaves requests waiting forever, whether they were
-  still queued or already being sent; they fail with `GatewayError`. An unexpected error while
-  dispatching a batch now reaches that batch's callers instead of being
-  lost in a background task.
+  still queued or already being sent; they fail with `GatewayError`. An
+  unexpected error while dispatching a batch now reaches that batch's
+  callers instead of being lost in a background task.
 - A half-open provider that was ranked but not used gets its trial call
   back, so it can no longer stay half-open forever.
 - `RetryPolicy.delay_for` no longer raises `OverflowError` for very large
