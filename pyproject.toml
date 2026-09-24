@@ -47,6 +47,8 @@ dev = [
 Homepage = "https://github.com/Yashwanth-Nallapuneni/llm-gateway"
 Repository = "https://github.com/Yashwanth-Nallapuneni/llm-gateway"
 Issues = "https://github.com/Yashwanth-Nallapuneni/llm-gateway/issues"
+Changelog = "https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/docs/ARCHITECTURE.md"
 
 [project.scripts]
 llm-gateway = "llm_gateway.cli:main"
