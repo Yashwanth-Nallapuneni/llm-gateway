@@ -41,7 +41,7 @@ def _in_flight_count(store_path) -> int:
 # --------------------------------------------------------------------------
 
 
-def test_budget_partial_run_then_resume_completes(tmp_path, monkeypatch):
+def test_budget_partial_run_then_resume_completes(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
@@ -89,17 +89,7 @@ def test_budget_partial_run_then_resume_completes(tmp_path, monkeypatch):
     # rerun with --resume and a much bigger budget: previously finished
     # prompts are served from the store, the rest go to the provider, and
     # every prompt succeeds this time.
-    from llm_gateway.providers.mock import MockClient
-
-    call_count = {"n": 0}
-    original_complete = MockClient.complete
-
-    async def counting_complete(self, request):
-        call_count["n"] += 1
-        return await original_complete(self, request)
-
-    monkeypatch.setattr(MockClient, "complete", counting_complete)
-
+    capsys.readouterr()  # drop the first run's output
     output_path2 = tmp_path / "out2.jsonl"
     code2 = main(
         [
@@ -123,9 +113,16 @@ def test_budget_partial_run_then_resume_completes(tmp_path, monkeypatch):
     assert [r["id"] for r in rows2] == [f"p{i}" for i in range(n)]
     assert all("text" in r for r in rows2), "every prompt must succeed after resume"
 
-    # only the prompts that failed with a budget error the first time should
-    # have gone to the provider on resume; the rest were served from store.
-    assert call_count["n"] == len(errors)
+    # Only the prompts that failed with a budget error the first time should
+    # go to the provider on resume; the rest are served from the store. Read
+    # the CLI's own summary line rather than counting client calls, since
+    # batching changes how many client calls a set of prompts takes.
+    match = re.search(
+        r"store: (\d+) served from store, (\d+) freshly called", capsys.readouterr().err
+    )
+    assert match is not None
+    assert int(match.group(1)) == len(successes)
+    assert int(match.group(2)) == len(errors)
     assert _in_flight_count(store_path) == 0
 
 
