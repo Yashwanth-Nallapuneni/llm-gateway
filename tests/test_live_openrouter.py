@@ -96,8 +96,10 @@ async def test_rate_limit_headers_sync_is_a_safe_no_op() -> None:
     OpenRouter call.
     """
     assert OPENROUTER_API_KEY is not None
+    # A slow refill (6 per minute, one token every 10s) so the token this
+    # call uses is still missing when we check, even if the reply is slow.
     provider = openrouter_provider(
-        OPENROUTER_API_KEY, model=LIVE_MODEL, rpm_limit=60, tpm_limit=100_000
+        OPENROUTER_API_KEY, model=LIVE_MODEL, rpm_limit=6, tpm_limit=100_000
     )
     gateway = LLMGateway(providers=[provider])
     before = provider.limiter.requests.capacity
