@@ -150,6 +150,20 @@ class LLMGateway:
         return self._fatal
 
     async def submit(self, request: LLMRequest) -> LLMResponse:
+        """Send one request through the gateway and wait for its answer.
+
+        The request is queued, batched with others, sent to the best
+        available provider, and retried or failed over as needed. With a
+        RunStore, an answer already stored for the same request is returned
+        without calling any provider.
+
+        Raises ProviderError when every attempt fails, NoEligibleProviderError
+        when no provider can take the request, BudgetExceeded when the budget
+        has no room, RequestTimeout when `request.timeout_s` passes first, and
+        GatewayError if the gateway is closed while the request is waiting.
+        All of these are GatewayError subclasses, so one except clause can
+        catch them all.
+        """
         coro = (
             self._submit_with_store(self.store, request)
             if self.store is not None
