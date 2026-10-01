@@ -244,7 +244,8 @@ class LiveCallCounter:
         self._budget.take()
         self.server_metrics.calls += 1
         try:
-            return await self._client.complete(request)
+            response: LLMResponse = await self._client.complete(request)
+            return response
         except ProviderError as exc:
             self._tally(exc)
             raise
@@ -369,7 +370,7 @@ class RunResult:
 
 async def run_naive(
     prompts: list[LLMRequest],
-    server: SimClient,
+    server: SimClient | LiveCallCounter,
     *,
     concurrency: int,
     retry: RetryPolicy,
@@ -451,7 +452,7 @@ async def run_naive(
 
 async def run_gateway(
     prompts: list[LLMRequest],
-    server: SimClient,
+    server: SimClient | LiveCallCounter,
     *,
     rpm_limit: float,
     tpm_limit: float,
@@ -479,6 +480,8 @@ async def run_gateway(
         # concurrently, which is what really happens against a chat API.
         # --batch-endpoint models the other case: a provider that genuinely
         # accepts many prompts per call.
+        # Only simulated runs reach here; live runs always pass `provider`.
+        assert isinstance(server, SimClient)
         provider = MockProvider(
             "sim",
             client=server,
