@@ -80,7 +80,7 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.11"
-files = ["src/llm_gateway"]
+files = ["src/llm_gateway", "examples"]
 strict = true
 warn_unreachable = true
 

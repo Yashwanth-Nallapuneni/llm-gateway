@@ -43,7 +43,7 @@ async def main() -> None:
         retry=RetryPolicy(max_attempts=3, base_delay=0.02, max_delay=0.2),
     )
 
-    used: Counter = Counter()
+    used: Counter[str] = Counter()
 
     async with gw:
         print("phase 1: both healthy, router prefers the cheaper provider")
@@ -53,7 +53,7 @@ async def main() -> None:
 
         print("phase 2: primary starts returning 503")
         primary_client.fail_status = 503
-        phase2: Counter = Counter()
+        phase2: Counter[str] = Counter()
         for i in range(20):
             phase2[(await gw.submit(LLMRequest(f"q{i}"))).provider] += 1
         print(f"  {dict(phase2)}")
@@ -62,7 +62,7 @@ async def main() -> None:
         print("phase 3: primary recovers, breaker half-opens and closes")
         primary_client.fail_status = None
         await asyncio.sleep(0.6)  # let the recovery timeout elapse
-        phase3: Counter = Counter()
+        phase3: Counter[str] = Counter()
         for i in range(20):
             phase3[(await gw.submit(LLMRequest(f"r{i}"))).provider] += 1
         print(f"  {dict(phase3)}")
