@@ -7,6 +7,13 @@ from llm_gateway.queue import RequestQueue
 from llm_gateway.types import LLMRequest, QueuedRequest
 
 
+async def pop(q: RequestQueue) -> QueuedRequest:
+    """Pop the next entry, failing clearly if the queue gave back nothing."""
+    entry = await q.pop()
+    assert entry is not None, "queue returned no entry"
+    return entry
+
+
 def entry(prompt: str, priority: int = 0) -> QueuedRequest:
     loop = asyncio.get_running_loop()
     return QueuedRequest(
@@ -20,7 +27,7 @@ async def test_priority_ordering_with_fifo_tiebreak():
     q = RequestQueue()
     for name, pri in [("a", 0), ("b", 5), ("c", 0), ("d", 5), ("e", 9)]:
         q.put(entry(name, pri))
-    order = [(await q.pop()).request.prompt for _ in range(5)]
+    order = [(await pop(q)).request.prompt for _ in range(5)]
     assert order == ["e", "b", "d", "a", "c"]
 
 
@@ -30,7 +37,7 @@ async def test_equal_priorities_never_compare_payloads():
     for i in range(50):
         q.put(entry(f"r{i}", priority=1))
     assert len(q) == 50
-    assert (await q.pop()).request.prompt == "r0"
+    assert (await pop(q)).request.prompt == "r0"
 
 
 async def test_pop_times_out_on_an_empty_queue():

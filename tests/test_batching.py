@@ -16,6 +16,13 @@ from llm_gateway.queue import RequestQueue
 from llm_gateway.types import LLMRequest, QueuedRequest
 
 
+async def pop(q: RequestQueue) -> QueuedRequest:
+    """Pop the next entry, failing clearly if the queue gave back nothing."""
+    entry = await q.pop()
+    assert entry is not None, "queue returned no entry"
+    return entry
+
+
 def entry(prompt: str = "hi", priority: int = 0, max_tokens: int = 10) -> QueuedRequest:
     loop = asyncio.get_running_loop()
     return QueuedRequest(
@@ -163,7 +170,7 @@ async def test_batch_does_not_mix_capability_requirements():
     assert prompts == ["plain-a", "plain-b"]
     # The mismatched request is requeued, not dropped.
     assert len(q) == 1
-    assert (await q.pop()).request.prompt == "special"
+    assert (await pop(q)).request.prompt == "special"
 
 
 async def test_highest_priority_request_sets_the_batch_capability():
@@ -181,4 +188,4 @@ async def test_highest_priority_request_sets_the_batch_capability():
     assert [e.request.prompt for e in batch] == ["urgent"]
     # The deferred pair went back, still ahead of nothing and behind nobody.
     assert len(q) == 2
-    assert [(await q.pop()).request.prompt for _ in range(2)] == ["plain-1", "plain-2"]
+    assert [(await pop(q)).request.prompt for _ in range(2)] == ["plain-1", "plain-2"]
