@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import sys
@@ -913,3 +914,22 @@ def test_dry_run_flags_a_zero_estimate_as_unpriced(tmp_path, capsys, monkeypatch
     code = main(["run", str(input_path), "--provider", "groq", "--dry-run"])
     assert code == 0
     assert "no per-token prices are configured" in capsys.readouterr().err
+
+
+def test_help_examples_only_use_real_flags():
+    # The examples at the end of `run --help` are plain text, so a renamed
+    # or removed flag would leave them silently wrong. Check each one.
+    import re
+
+    from llm_gateway.cli import RUN_EXAMPLES, _build_parser
+
+    parser = _build_parser()
+    run_parser = next(
+        action.choices["run"]
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    known = {opt for action in run_parser._actions for opt in action.option_strings}
+    used = set(re.findall(r"(?<!\S)--[a-z][a-z-]*", RUN_EXAMPLES))
+    assert used, "expected the help examples to use some flags"
+    assert used <= known, f"unknown flags in help examples: {sorted(used - known)}"
