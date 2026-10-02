@@ -387,8 +387,8 @@ def test_multi_provider_failover(tmp_path, monkeypatch):
     actually served it."""
     from llm_gateway import cli as cli_module
     from llm_gateway.providers.mock import MockClient
+    from llm_gateway.providers.mock import MockProvider as real_mock_provider
 
-    real_mock_provider = cli_module.MockProvider
     calls = {"n": 0}
 
     def fake_mock_provider(name="mock", **kwargs):
@@ -564,9 +564,8 @@ def test_adaptive_flag_is_wired_to_the_gateway(tmp_path, monkeypatch):
     input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}))
 
     seen = {}
+    from llm_gateway import LLMGateway as real_gateway_cls
     from llm_gateway import cli as cli_module
-
-    real_gateway_cls = cli_module.LLMGateway
 
     def spy_gateway(*args, **kwargs):
         seen["adaptive"] = kwargs.get("adaptive")
@@ -593,9 +592,8 @@ def test_adaptive_defaults_to_false(tmp_path, monkeypatch):
     input_path = _write(tmp_path, "prompts.jsonl", json.dumps({"prompt": "hi"}))
 
     seen = {}
+    from llm_gateway import LLMGateway as real_gateway_cls
     from llm_gateway import cli as cli_module
-
-    real_gateway_cls = cli_module.LLMGateway
 
     def spy_gateway(*args, **kwargs):
         seen["adaptive"] = kwargs.get("adaptive")
