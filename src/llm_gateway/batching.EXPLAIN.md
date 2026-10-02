@@ -42,7 +42,7 @@ three conditions holds:
 
 Each bounds a different resource, and any one alone leaves a hole: size alone
 lets sixteen enormous prompts overflow the context window, tokens alone lets
-four thousand one-word prompts into a single call, and time alone gives you
+four thousand one-word prompts into a single call and time alone gives you
 unbounded batches under a burst.
 
 Worked example: `max_batch_size=4`, `max_wait_ms=50`.

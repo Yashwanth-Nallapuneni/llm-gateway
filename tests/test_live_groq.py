@@ -10,7 +10,7 @@ anyone who checks this repo out without a key.
 
 Model choice: see docs/LIVE_TESTING.md for how `allam-2-7b` was picked and
 why the package's previously-advertised default (`llama-3.3-70b-versatile`)
-turned out to be dead -- `groq_provider`'s default has since been corrected
+turned out to be dead. `groq_provider`'s default has since been corrected
 to `allam-2-7b` too, but every test here still passes `model=LIVE_MODEL`
 explicitly rather than relying on the default, both to control cost/behaviour
 and because *any* hardcoded default can rot the moment Groq retires a model
@@ -97,9 +97,9 @@ async def test_default_model_is_live() -> None:
 
     assert default_model in live_model_ids, (
         f"groq_provider's default model {default_model!r} does not appear in "
-        f"Groq's live /models listing -- it has likely been deprecated/removed. "
+        f"Groq's live /models listing, so it has likely been deprecated or removed. "
         f"Pick a new default (small, non-reasoning, verified to return non-empty "
-        f"content at max_tokens=16 -- see docs/LIVE_TESTING.md) and update both "
+        f"content at max_tokens=16; see docs/LIVE_TESTING.md) and update both "
         f"groq_provider's `model=` default and LIVE_MODEL above."
     )
 
@@ -115,7 +115,7 @@ async def test_rate_limit_headers_sync_local_buckets() -> None:
     headers). Here the header comes from Groq itself.
 
     `TokenBucket.sync` deliberately only ever tightens a bucket (it takes
-    `min(local, server)` -- see rate_limit.py), so a locally-configured
+    `min(local, server)`, see rate_limit.py), so a locally-configured
     limit lower than the server's real limit would never move. To actually
     observe the sync, the local rpm/tpm are configured deliberately high
     (far above Groq's real free-tier limit for this model, observed at 7000
@@ -132,7 +132,7 @@ async def test_rate_limit_headers_sync_local_buckets() -> None:
 
     # If this fails, either Groq stopped sending x-ratelimit-remaining-requests
     # on this plan, or its real limit for this model now exceeds the
-    # deliberately-inflated local default above -- report that rather than
+    # deliberately-inflated local default above. Report that rather than
     # loosening the assertion.
     assert provider.limiter.requests.available < 100_000, (
         "requests bucket is still at (or near) the locally-configured "
@@ -150,7 +150,7 @@ async def test_rate_limit_headers_sync_local_buckets() -> None:
 @requires_key
 async def test_bad_key_is_401_and_not_retried() -> None:
     """An invalid key surfaces as ProviderError(status=401) and RetryPolicy
-    correctly refuses to retry it -- a 401 means the request is wrong, not
+    correctly refuses to retry it: a 401 means the request is wrong, not
     that the server is momentarily unavailable."""
     bad_provider = groq_provider("sk-invalid-not-a-real-key", model=LIVE_MODEL)
     gateway = LLMGateway(providers=[bad_provider])
@@ -174,7 +174,7 @@ async def test_real_429_with_retry_after() -> None:
     reliably provoking a 429 within the ~30-call budget for this whole file
     is not realistic without either a much tighter model or burning a
     meaningful slice of the daily quota. Rather than hammer the API to force
-    one, this test is skipped with the concrete numbers observed -- see
+    one, this test is skipped with the concrete numbers observed; see
     docs/LIVE_TESTING.md.
     """
     pytest.skip(

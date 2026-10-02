@@ -76,9 +76,9 @@ Falling back to "the first provider anyway" is the genuinely dangerous one. The
 caller asked for logprobs. They get back a perfectly well-formed response with
 `logprobs=None`. Nothing raises. They find out hours later, when the analysis
 script divides by a missing field, at which point the run is finished, the
-money is spent, and the results are garbage that *looks* like data.
+money is spent and the results are garbage that *looks* like data.
 
 So: raise, and name the reason per provider. "No eligible provider" alone is
-unactionable; the operator needs to know whether to raise a limit, fix a key, or
+unactionable; the operator needs to know whether to raise a limit, fix a key or
 add a capability. `NoEligibleProviderError` carries a `{provider: reason}` map
 for exactly that.

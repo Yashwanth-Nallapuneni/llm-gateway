@@ -21,7 +21,7 @@ run against their real APIs: Groq three times (see
 [benchmarks/README.md](benchmarks/README.md#live-results-real-groq-api) for
 all three in full, including two methodology failures kept on record), and
 OpenRouter once (real completions, logprobs, `require_parameters`
-enforcement, and both a bad-model and a bad-key error path; see
+enforcement and both a bad-model and a bad-key error path; see
 [docs/LIVE_TESTING.md](docs/LIVE_TESTING.md)). That run also confirmed
 OpenRouter sends no rate-limit headers at all, which is why the gateway now
 also supports opt-in AIMD-style adaptive rate limiting (`adaptive=True` on
@@ -32,10 +32,10 @@ against.
 Other components: a persistent run store (`RunStore`, SQLite-backed, used
 for resuming a crashed sweep and for idempotent replay), a budget ledger
 that reserves worst-case cost and settles on actual usage
-(`BudgetLedger`/`BudgetExceeded`), a circuit breaker, and a CLI
+(`BudgetLedger`/`BudgetExceeded`), a circuit breaker and a CLI
 (`llm-gateway run`) that reads a `.jsonl`/`.txt` file or stdin, supports
 `--dry-run` cost estimation, `--budget`, `--timeout`, `--metrics-json`,
-`--adaptive`, and `--provider {mock,groq,openrouter}` including a
+`--adaptive` and `--provider {mock,groq,openrouter}` including a
 comma-separated multi-provider list for failover across them. The
 simulated benchmark (`benchmarks/bench.py`) compares a naive
 semaphore-bounded loop against the gateway on a seeded mock server with a
@@ -51,7 +51,7 @@ boundaries, and sizes `--max-live-calls` to the worst case so no arm can be
 silently truncated. Across 3 runs of 40 prompts per arm, the gateway
 succeeded on 120/120 prompts (100%, 0 rate-limit rejections, ~31s/run)
 against naive's 107/120 (97.5%, 85.0%, 85.0% per run, 87 real 429s,
-~7-10s/run) -- the gateway trades wall-clock time for zero dropped
+~7-10s/run). The gateway trades wall-clock time for zero dropped
 prompts, which does not reproduce the simulated benchmark's wall-clock win
 and is not meant to.
 
@@ -92,14 +92,14 @@ by upstream, different limit models (TPM vs concurrency). LiteLLM's router
 filters on context window but not on logprobs. OpenRouter's
 `require_parameters` does, but only inside OpenRouter.
 
-What this gateway adds: token-bucket math, full-jitter backoff, and a
+What this gateway adds: token-bucket math, full-jitter backoff and a
 breaker state machine, implemented with the tradeoffs stated up front rather
 than hidden. Buckets are per-process, where LiteLLM uses Redis for shared
 state across processes. There is no distributed state and no streaming
 support.
 
 The niche this fills: capability-filtered routing across providers, an
-eval-workload focus, and zero-dependency code that fits in one sitting.
+eval-workload focus and zero-dependency code that fits in one sitting.
 
 ## Sources
 

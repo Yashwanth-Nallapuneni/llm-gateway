@@ -91,13 +91,13 @@ class CircuitBreaker:
 
     def record_failure(self) -> None:
         # A failed half-open probe re-opens immediately and restarts the timer,
-        # regardless of the failure count -- the probe *was* the test.
+        # regardless of the failure count, since the probe *was* the test.
         if self._state is State.HALF_OPEN:
             self._trip()
             return
         # An already-open breaker ignores further failures. In-flight calls
         # can land after the trip, and letting them re-trip would restart the
-        # recovery timer each time -- the breaker would never reach HALF_OPEN
+        # recovery timer each time, so the breaker would never reach HALF_OPEN
         # while any straggler was still failing.
         if self._state is State.OPEN:
             return

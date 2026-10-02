@@ -157,7 +157,7 @@ async def test_sync_never_raises_local_count_above_local_value(clock):
     bucket = TokenBucket(10, 1, clock=clock, sleep=clock.sleep)
     await bucket.acquire(6)  # local: 4 remaining
     assert bucket.available == pytest.approx(4.0)
-    # Server claims more room than we locally believe -- must be ignored,
+    # Server claims more room than we locally believe, so it must be ignored,
     # per the TRAP in TokenBucket.sync: trusting a larger number would hand
     # back tokens we've already spent.
     bucket.sync(remaining=9)
@@ -173,7 +173,7 @@ async def test_sync_clamps_to_zero_on_negative_remaining(clock):
 async def test_sync_clamps_to_capacity_even_if_server_says_more(clock):
     bucket = TokenBucket(10, 1, clock=clock, sleep=clock.sleep)
     # A misconfigured capacity, or a server number that exceeds it, must
-    # never leave _tokens > capacity -- that would break `headroom`.
+    # never leave _tokens > capacity, because that would break `headroom`.
     bucket.sync(remaining=999)
     assert bucket.available == pytest.approx(10.0)
 

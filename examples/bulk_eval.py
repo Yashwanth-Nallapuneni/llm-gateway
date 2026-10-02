@@ -56,7 +56,7 @@ async def main() -> None:
             prompt=f"Classify sentiment of review #{i}: " + "word " * rng.randint(5, 60),
             max_tokens=64,
             # A tenth of the workload needs logprobs, which only one provider
-            # supports -- this is what exercises capability routing.
+            # supports, which is what exercises capability routing.
             needs_logprobs=(i % 10 == 0),
             priority=1 if i % 50 == 0 else 0,
         )

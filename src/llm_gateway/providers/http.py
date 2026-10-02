@@ -6,7 +6,7 @@ so `import llm_gateway` still works when the optional `[http]` extra isn't
 installed.
 
 `OpenAICompatibleClient` implements `complete` against the POST
-`/chat/completions` shape that OpenAI, Groq, OpenRouter, and most
+`/chat/completions` shape that OpenAI, Groq, OpenRouter and most
 self-hosted inference servers speak. Provider-specific quirks (logprobs
 shape, strict-json shape, extra body fields) are factored into small
 overridable hooks so groq.py / openrouter.py can subclass and adjust only
@@ -52,7 +52,7 @@ def parse_retry_after(value: str) -> float | None:
       * Groq-style compound durations: "7.66s", "2m59.56s", "1h"
       * an HTTP-date: "Wed, 21 Oct 2015 07:28:00 GMT"
 
-    Returns None for anything that doesn't parse as one of these -- callers
+    Returns None for anything that doesn't parse as one of these, so callers
     treat "no Retry-After" and "unparseable Retry-After" the same way, so
     this never raises.
     """
@@ -120,14 +120,14 @@ class OpenAICompatibleClient:
         self.api_key = api_key
         self.model = model
         self.on_headers = on_headers
-        # Name stamped onto LLMResponse.provider -- distinct from `model`
+        # Name stamped onto LLMResponse.provider, distinct from `model`
         # (the response also echoes the model the API actually used, but
         # LLMResponse.provider identifies the upstream, matching how
         # MockClient stamps its own `name`). Adapters pass "groq"/"openrouter".
         self.provider_name = provider_name
 
         # If the caller injected a client (tests do this with MockTransport),
-        # we must never close it -- it isn't ours. Only a client we build
+        # we must never close it because it isn't ours. Only a client we build
         # ourselves gets closed in aclose().
         self._owns_client = client is None
         headers = {
@@ -145,7 +145,7 @@ class OpenAICompatibleClient:
         """Body fields to request logprobs. Default: OpenAI's shape.
 
         Overridden per adapter because not every OpenAI-compatible provider
-        expects `top_logprobs` to be an int the same way -- this hook exists
+        expects `top_logprobs` to be an int the same way, so this hook exists
         so an adapter can change the shape without touching the shared POST
         logic.
         """
@@ -272,7 +272,7 @@ class OpenAICompatibleClient:
             ) from exc
         except httpx.TransportError as exc:
             # Covers ConnectError and other transport-level failures. No
-            # HTTP status exists here at all, so status=None -- RetryPolicy
+            # HTTP status exists here at all, so status=None. RetryPolicy
             # treats that as retryable, which is right: the request never
             # reached the far end.
             raise ProviderError(

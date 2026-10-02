@@ -3,29 +3,29 @@
 Runs two clients against equivalent instances of a simulated rate-limited,
 occasionally-flaky server and compares them:
 
-  naive   -- asyncio.gather over all prompts through a bounded semaphore,
+  naive:     asyncio.gather over all prompts through a bounded semaphore,
              with a proper retry-with-exponential-backoff-and-jitter on
              429/5xx. No rate limiting: that's the variable under test, not
-             a strawman -- the retry logic is the same RetryPolicy the
+             a strawman: the retry logic is the same RetryPolicy the
              gateway itself uses.
-  gateway -- llm_gateway.LLMGateway, configured with a token bucket set to
-             the server's real limits, batching, and the same retry policy.
+  gateway:   llm_gateway.LLMGateway, configured with a token bucket set to
+             the server's real limits, batching and the same retry policy.
 
 One command reproduces everything:
 
     python3 benchmarks/bench.py --n-prompts 200 --runs 5 --seed 42 --markdown
 
 See benchmarks/README.md for methodology, the stated hypothesis, and
-"Threats to validity" -- read that before trusting any number this prints.
+"Threats to validity". Read that before trusting any number this prints.
 
-Live mode (--provider groq) runs the SAME two arms -- same code paths,
-same metric collection -- against the real Groq API instead of the
+Live mode (--provider groq) runs the SAME two arms (same code paths,
+same metric collection) against the real Groq API instead of the
 simulated server. It exists to answer a different question than the
 simulated run: not "does the gateway behave the way the token-bucket math
 says it should" (the simulated run already answers that, exactly, because
 it controls the server), but "does this actually work end to end against a
 real provider's real HTTP behaviour." It is not a bigger or more trustworthy
-version of the simulated benchmark -- it is a much smaller, much noisier
+version of the simulated benchmark. It is a much smaller, much noisier
 sanity check, deliberately kept tiny by a hard-coded call budget:
 
     GROQ_API_KEY=$(cat ~/.groq_key) python3 benchmarks/bench.py \\
@@ -56,7 +56,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-# Not installed as a package in this checkout -- match examples/bulk_eval.py.
+# Not installed as a package in this checkout. Match examples/bulk_eval.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from llm_gateway import Batcher, LLMGateway, LLMRequest, RetryPolicy
@@ -90,8 +90,8 @@ class SimClient(MockClient):
     Subclasses MockClient rather than editing it: RPM-window enforcement
     (429 + Retry-After) and "a batch fails as a unit" semantics are
     inherited unchanged from mock.py. This only adds two things mock.py
-    does not have -- per-call latency sampled from a distribution instead
-    of a fixed float, and probabilistic 503 injection -- both driven by
+    does not have: per-call latency sampled from a distribution instead
+    of a fixed float, and probabilistic 503 injection, both driven by
     dedicated seeded `random.Random` instances so a run is exactly
     reproducible.
     """
@@ -115,7 +115,7 @@ class SimClient(MockClient):
         self._transient_fail_rate = transient_fail_rate
         # lognormvariate(mu, sigma) has mean exp(mu + sigma^2/2); solve mu
         # so `latency_mean_s` is the distribution's actual mean, not its
-        # median -- a log-normal's median is noticeably below its mean, and
+        # median, since a log-normal's median is noticeably below its mean, and
         # a caller who passes "mean latency 30ms" wants 30ms on average.
         self._mu = math.log(latency_mean_s) - (latency_sigma**2) / 2.0
         self._sigma = latency_sigma
@@ -129,7 +129,7 @@ class SimClient(MockClient):
         # fail_first_n) takes precedence if configured; we don't use those
         # here, but preserving the chain keeps this class safe to reuse
         # with them. Beyond that, inject a transient 503 at the configured
-        # rate -- a fresh draw per call, not "fail every Nth call", so runs
+        # rate: a fresh draw per call, not "fail every Nth call", so runs
         # look like real background flakiness rather than a fixed pattern.
         base = super()._next_failure()
         if base is not None:
@@ -177,15 +177,15 @@ class LiveCallBudgetExceeded(RuntimeError):
 
     Deliberately not a ProviderError: RetryPolicy.should_retry() only
     retries ProviderError/known transport exceptions, so this is never
-    retried -- it marks the in-flight prompt as failed and stops spending
+    retried. It marks the in-flight prompt as failed and stops spending
     real quota, rather than a retry storm burning through the ceiling
     while "retrying into the wall."
     """
 
 
 def _is_budget_exceeded(exc: BaseException) -> bool:
-    """True if `exc` is, or was caused/raised-from, a LiveCallBudgetExceeded
-    -- checked by walking __cause__/__context__ since RetryPolicy and the
+    """True if `exc` is, or was caused/raised-from, a LiveCallBudgetExceeded,
+    checked by walking __cause__/__context__ since RetryPolicy and the
     gateway's own error handling may wrap the original exception rather than
     re-raising it bare."""
     seen: set[int] = set()
@@ -201,7 +201,7 @@ def _is_budget_exceeded(exc: BaseException) -> bool:
 class LiveCallBudget:
     """Shared across every arm and every run of one live invocation.
 
-    Counts real HTTP calls about to be made, not prompts -- so it also
+    Counts real HTTP calls about to be made, not prompts, so it also
     catches retries, which a purely static preflight check (planned =
     n_prompts * runs * 2) cannot.
     """
@@ -217,7 +217,7 @@ class LiveCallBudget:
         if self.used >= self.max_calls:
             raise LiveCallBudgetExceeded(
                 f"live call budget exceeded ({self.max_calls} calls total this "
-                "invocation) -- stopping rather than continuing to spend real "
+                "invocation). Stopping rather than continuing to spend real "
                 "provider quota. See --max-live-calls."
             )
         self.used += 1
@@ -355,8 +355,8 @@ class RunResult:
     # Set when this arm was cut off mid-run by --max-live-calls
     # (LiveCallBudgetExceeded) rather than completing on its own. An invalid
     # run's successes/failures/429s are not a measurement of the client under
-    # test -- they're an artifact of the harness refusing to place calls it
-    # had no budget left for -- so callers must exclude it from any reported
+    # test: they're an artifact of the harness refusing to place calls it
+    # had no budget left for, so callers must exclude it from any reported
     # summary rather than averaging it in. See the retracted "57.5%" figure
     # in benchmarks/README.md for what happens when this isn't done.
     invalid: bool = False
@@ -393,7 +393,7 @@ async def run_naive(
         while True:
             try:
                 # The semaphore is held only around the network call, not
-                # across the backoff sleep below -- the same discipline
+                # across the backoff sleep below, the same discipline
                 # gateway.py uses, so a pile of retrying requests can't
                 # starve healthy ones out of every concurrency slot.
                 async with sem:
@@ -402,7 +402,7 @@ async def run_naive(
                 if _is_budget_exceeded(exc):
                     # Not a real rejection: the harness itself refused to
                     # place this call. Flag the whole arm invalid rather
-                    # than letting it masquerade as a failed prompt -- see
+                    # than letting it masquerade as a failed prompt. See
                     # RunResult.invalid.
                     budget_exceeded = True
                 if not retry.should_retry(exc, attempt):
@@ -437,7 +437,7 @@ async def run_naive(
         output_tokens=output_tokens,
         invalid=budget_exceeded,
         invalid_reason=(
-            "hit --max-live-calls mid-arm (LiveCallBudgetExceeded) -- not a "
+            "hit --max-live-calls mid-arm (LiveCallBudgetExceeded), so not a "
             "real measurement of this arm's success/failure/429 rate"
         )
         if budget_exceeded
@@ -466,13 +466,13 @@ async def run_gateway(
     provider: Any | None = None,
 ) -> RunResult:
     # `provider` lets a caller hand in an already-built llm_gateway.Provider
-    # instead of the simulated MockProvider below -- this is how live mode
+    # instead of the simulated MockProvider below, which is how live mode
     # (run_all, --provider groq) reuses this exact function against a real
     # Provider wrapping the real Groq API, with server.server_metrics still
     # the source of requests_sent/429/5xx (see LiveCallCounter).
     if provider is None:
-        # Default False on purpose. Neither Groq nor OpenRouter -- the two
-        # providers this library actually ships adapters for -- has a
+        # Default False on purpose. Neither Groq nor OpenRouter (the two
+        # providers this library actually ships adapters for) has a
         # synchronous multi-prompt endpoint, so counting a 16-prompt batch as
         # ONE request would credit the gateway with a saving no real
         # deployment can collect. With it False the gateway still groups
@@ -541,7 +541,7 @@ async def run_gateway(
         output_tokens=output_tokens,
         invalid=budget_exceeded,
         invalid_reason=(
-            "hit --max-live-calls mid-arm (LiveCallBudgetExceeded) -- not a "
+            "hit --max-live-calls mid-arm (LiveCallBudgetExceeded), so not a "
             "real measurement of this arm's success/failure/429 rate"
         )
         if budget_exceeded
@@ -555,7 +555,7 @@ async def run_gateway(
 
 
 def _percentile(values: list[float], p: float) -> float:
-    """Nearest-rank percentile. Same method as llm_gateway.metrics -- never
+    """Nearest-rank percentile. Same method as llm_gateway.metrics. Never
     interpolates a value nothing actually produced. Reimplemented locally
     (rather than importing the private `_percentile` from metrics.py) since
     it's a five-line function and importing a leading-underscore name across
@@ -607,14 +607,14 @@ def valid_runs(runs: list[RunResult], label: str) -> list[RunResult]:
     before it reaches summarize(). The refuse-to-start check in
     run_all_live sizes --max-live-calls so this should never trigger, but
     summarize() must not silently average a harness artifact into a real
-    result if it somehow does -- that is exactly how the retracted '57.5%'
+    result if it somehow does. That is exactly how the retracted '57.5%'
     figure happened."""
     ok = [r for r in runs if not r.invalid]
     dropped = len(runs) - len(ok)
     if dropped:
         print(
             f"WARNING: dropping {dropped}/{len(runs)} {label} run(s), cut off "
-            "mid-arm by --max-live-calls -- not a real result, see RunResult.invalid",
+            "mid-arm by --max-live-calls. Not a real result, see RunResult.invalid",
             flush=True,
         )
     if not ok:
@@ -626,7 +626,7 @@ def valid_runs(runs: list[RunResult], label: str) -> list[RunResult]:
 
 
 def summarize(runs: list[RunResult], n_prompts: int) -> dict[str, dict[str, float]]:
-    """Median and p5-p95 of each metric, across runs -- never a single run."""
+    """Median and p5-p95 of each metric, across runs, never a single run."""
     per_run = [run_scalars(r, n_prompts) for r in runs]
     out: dict[str, dict[str, float]] = {}
     for key, _, _ in METRIC_ORDER:
@@ -653,7 +653,7 @@ def arm_order_for_run(run_index: int, arm_order: str) -> tuple[str, str]:
     bucket the first arm just spent. Running every run in the same order
     bakes that bias into every number the same way; "alternate" makes any
     residual bias visible in the per-run spread instead (see
-    --arm-cooldown for the other half of the fix -- actually letting the
+    --arm-cooldown for the other half of the fix: actually letting the
     bucket refill between arms).
     """
     if arm_order == "naive-first":
@@ -668,7 +668,7 @@ async def _cooldown(seconds: float, *, from_label: str, to_label: str) -> None:
     """Sleep between two arm executions, or before the very first one
     (`from_label="start"`).
 
-    Applied at EVERY arm boundary -- including the boundary between one
+    Applied at EVERY arm boundary, including the boundary between one
     run's last arm and the next run's first arm, not just between the two
     arms inside a single run. A cooldown that only fires within a run lets a
     shared account's rate-limit state carry from one run into the next
@@ -686,7 +686,7 @@ async def _cooldown(seconds: float, *, from_label: str, to_label: str) -> None:
     else:
         print(
             f"  cooling down {seconds:.0f}s between {from_label} and {to_label} arms "
-            "(letting the account's rate-limit bucket refill -- not hung)...",
+            "(letting the account's rate-limit bucket refill; not hung)...",
             flush=True,
         )
     await asyncio.sleep(seconds)
@@ -707,7 +707,7 @@ async def run_all_sim(args: argparse.Namespace) -> dict[str, Any]:
         words_max=getattr(args, "prompt_words_max", 40),
     )
     master = random.Random(args.seed)
-    # One seed per run, drawn once from the master RNG -- reused for BOTH
+    # One seed per run, drawn once from the master RNG, reused for BOTH
     # arms so run i in the naive arm and run i in the gateway arm face
     # identically-seeded server latency/failure streams and identically
     # seeded retry jitter. See "Threats to validity" in the README for what
@@ -783,7 +783,7 @@ async def run_all_sim(args: argparse.Namespace) -> dict[str, Any]:
         second_fn, second_list = runners[second]
         # Cooldown before EVERY arm, including the first arm of run 0
         # (from_label="start", a no-op unless --arm-cooldown is set) and the
-        # first arm of every run after the first -- not just between the two
+        # first arm of every run after the first, not just between the two
         # arms inside one run.
         await _cooldown(cooldown_s, from_label=prev_label, to_label=first)
         first_list.append(await first_fn())
@@ -799,7 +799,7 @@ async def run_all_sim(args: argparse.Namespace) -> dict[str, Any]:
 
 
 async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
-    """Same two arms, same metric collection as run_all_sim -- against the
+    """Same two arms, same metric collection as run_all_sim, against the
     real Groq API instead of SimClient. See the module docstring and
     benchmarks/README.md's "Live results" section for what this can and
     cannot show at the scale this is run at.
@@ -814,7 +814,7 @@ async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
     max_live_calls = args.max_live_calls
     # Worst case, not expected case: every prompt in every arm of every run
     # exhausts its full retry budget (--max-attempts calls each) before
-    # succeeding or giving up. This is deliberately pessimistic -- a
+    # succeeding or giving up. This is deliberately pessimistic: a
     # ceiling sized to the *expected* call count is exactly what let
     # --max-live-calls truncate an arm mid-run in an earlier attempt (see
     # benchmarks/README.md's retracted "57.5%" figure): the harness cut the
@@ -834,8 +834,8 @@ async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
             f"above --max-live-calls {max_live_calls}. The best case is "
             f"{planned_calls} calls (no retries at all), but sizing the ceiling to "
             "the best case is what let a real arm get truncated mid-run in an "
-            "earlier attempt -- see benchmarks/README.md's retracted '57.5%' "
-            "figure. Lower --n-prompts/--runs/--max-attempts or raise "
+            "earlier attempt (see benchmarks/README.md's retracted '57.5%' "
+            "figure). Lower --n-prompts/--runs/--max-attempts or raise "
             "--max-live-calls deliberately so no arm can hit the ceiling before "
             "it finishes on its own."
         )
@@ -860,8 +860,8 @@ async def run_all_live(args: argparse.Namespace) -> dict[str, Any]:
         for run_index in range(args.runs):
 
             async def do_naive() -> RunResult:
-                # Naive arm: bare GroqClient, wrapped only for call counting
-                # -- no rate limiting, same concurrency/retry discipline as
+                # Naive arm: bare GroqClient, wrapped only for call counting,
+                # with no rate limiting, same concurrency/retry discipline as
                 # the simulated naive arm.
                 naive_client = LiveCallCounter(
                     build_live_groq_client(args.model, api_key), budget
@@ -960,19 +960,19 @@ EXPECTATION = """\
 Hypothesis, stated before the numbers below (so it's falsifiable, not
 reverse-engineered from the outcome):
   - naive should show a meaningful count of 429s once load exceeds the
-    server's configured RPM, and -- because its retry budget is finite
-    while the server's RPM window is a real 60s sliding window -- some
+    server's configured RPM. Also, because its retry budget is finite
+    while the server's RPM window is a real 60s sliding window, some
     requests may exhaust their retries and fail outright rather than
     eventually succeed.
   - gateway should show 429s approaching zero (the token bucket paces
     requests under the limit before they're sent) and fewer total requests
     sent to the server, at the cost of a bit more added queueing latency.
 If the numbers below don't show that pattern, that's a real result, not a
-bug in this harness -- it will be reported as such, not tuned away.
+bug in this harness: it will be reported as such, not tuned away.
 """
 
 LIVE_EXPECTATION = """\
-LIVE MODE -- read this before the numbers below.
+LIVE MODE: read this before the numbers below.
 
 This is a small, real-network sanity check, not a bigger version of the
 simulated benchmark. For this account/model, measured response headers put
@@ -985,14 +985,14 @@ constraint under test here. Two opposite failure modes are both real
 possibilities and neither is a bug in this harness:
   - The workload may not generate enough tokens/min to approach 6000 (e.g.
     too few prompts, or prompts too short). If status_429 is 0 for BOTH
-    arms below, that is not "the gateway ties naive" -- it is "this run
+    arms below, that is not "the gateway ties naive"; it is "this run
     never got close enough to the token ceiling to exercise the thing
     under test," and the simulated benchmark above remains the only
     evidence for the rate-limiting claim.
   - --live-tpm-limit may still be misconfigured relative to the account's
     actual current limit (limits can change, or differ by model). A first
     attempt at this benchmark set the gateway ceiling from a misread
-    header and left the token bucket effectively unpaced -- see
+    header and left the token bucket effectively unpaced. See
     benchmarks/README.md's "Live results" for what actually happened and
     how it was corrected. If BOTH arms show heavy 429s and low success,
     check whether --live-tpm-limit was really under the account's real
@@ -1205,14 +1205,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm-cooldown",
         type=float,
         default=None,
-        help="seconds to sleep before EVERY arm -- before the first arm of "
-        "the whole invocation, between the two arms inside a run, and "
-        "between one run's last arm and the next run's first arm -- so a "
+        help="seconds to sleep before EVERY arm: before the first arm of "
+        "the whole invocation, between the two arms inside a run and "
+        "between one run's last arm and the next run's first arm, so a "
         "shared account's rate-limit bucket can refill before the next arm "
         "inherits whatever the previous one used. Applying this only "
         "within a run (not across runs too) was a documented confound in "
-        "an earlier live attempt -- see benchmarks/README.md's 'Live "
-        "results'. Default: 0 for --provider sim (the simulated server "
+        "an earlier live attempt (see benchmarks/README.md's 'Live "
+        "results'). Default: 0 for --provider sim (the simulated server "
         "gives each arm its own independent SimClient, so there's no "
         "shared state to let refill), 90 for --provider groq (all arms "
         "share one real account/token bucket otherwise). Pass explicitly "
@@ -1237,7 +1237,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["sim", "groq"],
         default="sim",
         help="'sim' (default): the simulated server above. 'groq': the real "
-        "Groq API -- reads GROQ_API_KEY from the environment, never from a "
+        "Groq API. Reads GROQ_API_KEY from the environment, never from a "
         "flag, so the key is never captured in argv, the printed header, or "
         "the --json dump.",
     )
@@ -1245,7 +1245,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default="allam-2-7b",
         help="model id passed to Groq (live mode only). Default is a small, "
-        "verified-working model -- do not rely on the library's own default, "
+        "verified-working model. Do not rely on the library's own default, "
         "which may not match a given account's access.",
     )
     live.add_argument(
@@ -1265,12 +1265,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="gateway arm's request-bucket ceiling, live mode only. Measured "
         "real response headers for this account/model showed "
         "x-ratelimit-limit-requests=7000 with a ~7-minute reset window (roughly "
-        "1000 req/min) -- generous, and NOT the binding constraint (see "
+        "1000 req/min), which is generous and NOT the binding constraint (see "
         "--live-tpm-limit). This default (900) is set comfortably under that "
         "measured request ceiling so requests are never why the gateway arm "
         "paces itself; tokens-per-minute is. An earlier version of this flag "
         "defaulted to 25, extrapolated from a single misread header on the "
-        "first live attempt -- see benchmarks/README.md, 'Live results', for "
+        "first live attempt; see benchmarks/README.md, 'Live results', for "
         "that mistake and the header values that corrected it. The naive arm "
         "has no rate limiting at all, live or simulated: that asymmetry is "
         "the variable under test.",
@@ -1281,7 +1281,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=5_500.0,
         help="gateway arm's token-per-minute bucket, live mode only. Measured "
         "real response headers for this account/model showed "
-        "x-ratelimit-limit-tokens=6000 with a fast-refilling window -- this "
+        "x-ratelimit-limit-tokens=6000 with a fast-refilling window. This "
         "is the actual binding constraint for this account (also matches "
         "groq_provider()'s own default tpm_limit=6000 in "
         "src/llm_gateway/providers/groq.py). This default (5500) is set just "

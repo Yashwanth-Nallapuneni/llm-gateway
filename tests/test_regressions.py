@@ -23,7 +23,7 @@ def fast_gateway(**kw: Any) -> LLMGateway:
 
 # ---------------------------------------------------------------------
 # gateway.aclose() while a batch is already in flight (worker task, not
-# the queue) -- distinct from the already-fixed "still in the queue" case.
+# the queue), distinct from the already-fixed "still in the queue" case.
 # ---------------------------------------------------------------------
 
 
@@ -35,7 +35,7 @@ async def test_aclose_resolves_requests_already_in_flight_in_a_worker() -> None:
     aclose() cancels the dispatcher AND every worker task. _dispatch()'s
     exception handling only catches `Exception`, so a `CancelledError`
     delivered mid-await propagates straight out of the worker without
-    ever calling _fail_batch -- the batch's futures are never resolved.
+    ever calling _fail_batch, so the batch's futures are never resolved.
     Only _drain_with_error's sweep of the (now empty) queue runs, and it
     finds nothing to drain.
     """
@@ -44,7 +44,7 @@ async def test_aclose_resolves_requests_already_in_flight_in_a_worker() -> None:
     gw = LLMGateway(providers=[MockProvider("a", latency=5.0)])
 
     task = asyncio.ensure_future(gw.submit(LLMRequest("hello")))
-    # Let the request get enqueued, picked up by the dispatcher, and handed
+    # Let the request get enqueued, picked up by the dispatcher and handed
     # to a worker task that is now awaiting the (slow) provider call.
     for _ in range(5):
         await asyncio.sleep(0)
@@ -94,7 +94,7 @@ def test_release_probe_does_not_free_a_probe_claimed_by_someone_else() -> None:
 async def test_submit_timeout_task_exception_is_retrieved_not_leaked() -> None:
     """When submit() times out, the underlying task keeps running (shield).
     Once it finishes (with an exception, since nothing serves it), nothing
-    must warn "Task exception was never retrieved" -- the done-callback
+    must warn "Task exception was never retrieved". The done-callback
     must actually retrieve it.
     """
     gw = LLMGateway(providers=[MockProvider("a", latency=0.05)])

@@ -225,7 +225,7 @@ async def test_concurrent_reservations_never_collectively_exceed_limit():
 
     await asyncio.gather(*(attempt() for _ in range(50)))
 
-    # Exactly limit/cost reservations should have been admitted -- not more.
+    # Exactly limit/cost reservations should have been admitted, not more.
     assert len(successes) == 10
     assert len(failures) == 40
     assert ledger.committed == pytest.approx(10.0)
@@ -286,6 +286,6 @@ def test_many_reserve_release_cycles_do_not_drift_committed_negative():
         r.release()
     assert ledger.committed >= -1e-9
     assert ledger.committed == pytest.approx(0.0, abs=1e-6)
-    # Budget is still fully usable -- no drift ate into it.
+    # Budget is still fully usable, so no drift ate into it.
     r = ledger.reserve(1.0)
     r.release()

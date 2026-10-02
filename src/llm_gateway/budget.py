@@ -93,7 +93,7 @@ class Reservation:
     def settle(self, actual_usd: float, actual_tokens: int | None = None) -> None:
         """Replace this reservation with the real cost of the call.
 
-        `actual_usd` may be larger than the reservation's `usd` -- a
+        `actual_usd` may be larger than the reservation's `usd`: a
         provider can bill more than `max_tokens` implied. That's allowed
         and recorded honestly: `spent` grows by the true amount, and
         `committed` stays correct because the reservation is removed in the
@@ -114,7 +114,7 @@ class Reservation:
         self._ledger._settle(self, actual_usd, actual_tokens)
 
     def release(self) -> None:
-        """Give back the full reservation, unspent -- for a call that failed
+        """Give back the full reservation, unspent, for a call that failed
         and cost nothing (a connection error before the provider did any
         work, a request rejected before it was ever sent, etc).
 
@@ -138,7 +138,7 @@ class Reservation:
         # Nothing to do if the caller already settled or released inside
         # the block. If the block raised without settling, release the
         # hold so a failure doesn't permanently consume budget. If it
-        # exited cleanly without settling, that's a caller bug -- silently
+        # exited cleanly without settling, that's a caller bug, since silently
         # releasing would let a successful, unbilled call vanish from the
         # ledger, so raise instead.
         if self._closed:
@@ -148,7 +148,7 @@ class Reservation:
             return
         raise RuntimeError(
             "Reservation exited its `with` block without settle() or release() "
-            "being called -- the caller must settle with the real cost (or "
+            "being called: the caller must settle with the real cost (or "
             "release explicitly) before leaving the block"
         )
 
@@ -198,8 +198,8 @@ class BudgetLedger:
         tokens past `max_tokens_total`. Neither error mutates the ledger.
 
         The dollar check runs first, so a request that fails both reports
-        the dollar ceiling -- the primary limit this module exists for,
-        with the token ceiling as a secondary, optional guard.
+        the dollar ceiling (the primary limit this module exists for,
+        with the token ceiling as a secondary, optional guard).
         """
         if estimated_usd < 0:
             raise ValueError(f"estimated_usd must be >= 0, got {estimated_usd}")
@@ -258,7 +258,7 @@ class BudgetLedger:
 
     @property
     def spent(self) -> float:
-        """Settled spend only -- real cost of calls that have completed."""
+        """Settled spend only: real cost of calls that have completed."""
         return self._spent
 
     @property
@@ -275,7 +275,7 @@ class BudgetLedger:
     @property
     def remaining(self) -> float:
         """Headroom against the limit, treating outstanding reservations as
-        spent. Never negative -- a reservation that would drive this below
+        spent. Never negative: a reservation that would drive this below
         zero is rejected by `reserve()` before it is ever made.
         """
         return max(0.0, self.limit_usd - self.committed)
@@ -298,7 +298,7 @@ class BudgetLedger:
     @property
     def outstanding_count(self) -> int:
         """Number of reservations made but not yet settled or released.
-        Mostly useful for tests and debugging -- a run that has finished
+        Mostly useful for tests and debugging: a run that has finished
         cleanly should end with this at 0.
         """
         return len(self._outstanding)

@@ -36,7 +36,7 @@ Call `gateway.submit(request)` (`LLMGateway.submit` in
 
 4. **Batcher.** `Batcher.collect` in `src/llm_gateway/batching.py` blocks for
    the first request, then keeps pulling more from the queue until the batch
-   hits `max_batch_size`, `max_batch_tokens`, or the oldest member has waited
+   hits `max_batch_size`, `max_batch_tokens` or the oldest member has waited
    `max_wait_ms`, whichever comes first. Requests with different hard
    capability needs (logprobs, strict JSON) are pulled off the queue but set
    aside and put back rather than mixed into an incompatible batch.
@@ -74,7 +74,7 @@ Call `gateway.submit(request)` (`LLMGateway.submit` in
 8. **Provider HTTP call.** `Provider.complete` / `Provider.complete_batch_settled`
    in `providers/base.py` acquire a concurrency slot
    (`asyncio.Semaphore`) and call the underlying client, `MockClient`
-   (`providers/mock.py`), or `OpenAICompatibleClient` and its Groq/OpenRouter
+   (`providers/mock.py`) or `OpenAICompatibleClient` and its Groq/OpenRouter
    subclasses (`providers/http.py`, `providers/groq.py`,
    `providers/openrouter.py`) for real HTTP.
 
@@ -82,7 +82,7 @@ Call `gateway.submit(request)` (`LLMGateway.submit` in
    checked with `RetryPolicy.should_retry` (`src/llm_gateway/retry.py`)
    against status code and attempt count. If retryable, `delay_for`
    computes an exponential-backoff-with-full-jitter delay (overridden
-   upward by a `Retry-After` header if present), the loop sleeps, and tries
+   upward by a `Retry-After` header if present), the loop sleeps and tries
    again. If a provider's whole attempt fails outright, the leftover
    entries move to the next candidate provider from the router's ranked
    list (failover).
@@ -98,7 +98,7 @@ Call `gateway.submit(request)` (`LLMGateway.submit` in
 
 11. **Metrics.** Throughout, `MetricsSink` (`src/llm_gateway/metrics.py`)
     records attempts, successes, failures by class, retries, blocked time,
-    batch sizes, and cost per provider.
+    batch sizes and cost per provider.
 
 12. **Response.** The entry's `asyncio.Future` is resolved with the
     `LLMResponse`, and `submit()`'s `await entry.future` returns it to the
@@ -135,19 +135,19 @@ flowchart TD
 
 | File | Job | Lines |
 |---|---|---|
-| `gateway.py` | Wires queue, batcher, router, limiter, retry, and provider calls together; owns the dispatch loop | ~580 |
+| `gateway.py` | Wires queue, batcher, router, limiter, retry and provider calls together; owns the dispatch loop | ~580 |
 | `queue.py` | Priority (max-heap) async queue of pending requests | ~80 |
-| `batching.py` | Groups queued requests into batches by size, tokens, or wait time | ~110 |
+| `batching.py` | Groups queued requests into batches by size, tokens or wait time | ~110 |
 | `routing.py` | Filters providers by capability and health, ranks survivors | ~130 |
 | `breaker.py` | Per-provider circuit breaker state machine | ~110 |
 | `rate_limit.py` | Token-bucket rate limiting, header sync, AIMD adaptive mode | ~400 |
 | `retry.py` | Classifies failures as retryable, computes jittered backoff | ~130 |
 | `budget.py` | Reserve-then-settle spending ceiling in USD and tokens | ~300 |
 | `store.py` | SQLite-backed idempotent, resumable request/response log | ~280 |
-| `metrics.py` | In-memory counters, latency percentiles, and a text report | ~170 |
+| `metrics.py` | In-memory counters, latency percentiles and a text report | ~170 |
 | `types.py` | Shared dataclasses (`LLMRequest`, `LLMResponse`, ...) and exceptions | ~180 |
 | `cli.py` | `llm-gateway` command-line entry point (`run` and `models`) | ~880 |
-| `providers/base.py` | `Provider`: pairs a client with its own limiter, breaker, and concurrency cap | ~140 |
+| `providers/base.py` | `Provider`: pairs a client with its own limiter, breaker and concurrency cap | ~140 |
 | `providers/mock.py` | In-process fake provider used by the whole test suite | ~230 |
 | `providers/http.py` | Generic OpenAI-compatible HTTP client (needs `httpx`) | ~330 |
 | `providers/groq.py` | Groq-specific client/provider factory built on `http.py` | ~140 |
@@ -175,7 +175,7 @@ cooldown.
 
 **Batching.** Instead of sending each prompt as its own network round trip,
 collect several that arrived close together and send them as one call,
-bounded by a size limit, a token limit, and a maximum wait time so no
+bounded by a size limit, a token limit and a maximum wait time so no
 request waits forever.
 
 **Capability routing.** Not every provider can do everything (return token
@@ -206,7 +206,7 @@ avoid overloading a network.
 1. `src/llm_gateway/types.py`, the shared vocabulary (`LLMRequest`,
    `LLMResponse`, exceptions).
 2. `src/llm_gateway/gateway.py`, the whole request lifecycle in one file;
-   read `submit`, `_loop`, `_dispatch`, and `_call_with_retry` in that order.
+   read `submit`, `_loop`, `_dispatch` and `_call_with_retry` in that order.
 3. `src/llm_gateway/queue.py` and `batching.py`, how work accumulates
    before it goes anywhere.
 4. `src/llm_gateway/routing.py` and `providers/base.py`, how a provider is

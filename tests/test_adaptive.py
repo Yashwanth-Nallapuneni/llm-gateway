@@ -1,6 +1,6 @@
 """Adaptive (AIMD) rate limiting: opt-in slow-down-on-429, creep-back-up-on-success.
 
-All offline and deterministic -- a fake clock stands in for time.monotonic(),
+All offline and deterministic: a fake clock stands in for time.monotonic(),
 and no test relies on asyncio.sleep actually waiting.
 """
 

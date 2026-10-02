@@ -50,8 +50,8 @@ class MockClient:
         self.rpm_limit = rpm_limit
         self.supports_logprobs = supports_logprobs
         self._clock = clock or time.monotonic
-        # Lets a test simulate a truncated (or otherwise non-"stop") response
-        # -- e.g. finish_reason="length" with empty text, reproducing the
+        # Lets a test simulate a truncated (or otherwise non-"stop") response,
+        # e.g. finish_reason="length" with empty text, reproducing the
         # reasoning-model-starved-of-budget trap offline.
         self.finish_reason = finish_reason
 
@@ -74,7 +74,7 @@ class MockClient:
                 return None
             return self.fail_sequence.pop(0)
         if self._fail_first_configured:
-            # "fail the first N calls, then behave" -- once the budget is
+            # "fail the first N calls, then behave": once the budget is
             # spent this client is healthy, regardless of fail_status.
             if self.fail_first_n > 0:
                 self.fail_first_n -= 1
@@ -158,7 +158,7 @@ class MockClient:
 
         status = self._next_failure()
         if status is not None:
-            # A batch fails as a unit -- that is how provider batch endpoints
+            # A batch fails as a unit, which is how provider batch endpoints
             # behave, and it is what makes batching a latency/blast-radius
             # tradeoff rather than a free win.
             if status == 429:
@@ -210,7 +210,7 @@ def MockProvider(
 
     Breaker settings are named explicitly rather than swept into
     **client_kwargs: they configure the Provider, not the client, and when
-    an explicit `client=` is passed **client_kwargs is ignored entirely --
+    an explicit `client=` is passed **client_kwargs is ignored entirely,
     so a swept-up `failure_threshold` would be silently dropped.
     """
     return Provider(

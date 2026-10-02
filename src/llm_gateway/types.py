@@ -28,7 +28,7 @@ class LLMRequest:
     priority: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
     # Overall wall-clock budget for this request, covering queueing, batching,
-    # rate-limit waits and every retry -- not just one HTTP call. None (the
+    # rate-limit waits and every retry, not just one HTTP call. None (the
     # default) means wait forever, exactly like before this field existed.
     timeout_s: float | None = None
 
@@ -57,7 +57,7 @@ class LLMResponse:
     latency_s: float = 0.0
     # The upstream's stop reason ("stop", "length", "content_filter", ...).
     # None when the provider didn't send one. Not normalized across
-    # providers -- callers who care about a specific value should check it
+    # providers, so callers who care about a specific value should check it
     # against the exact string their provider documents.
     finish_reason: str | None = None
 
@@ -118,7 +118,7 @@ class ProviderError(GatewayError):
     """A failure that came back from (or on the way to) a provider.
 
     `status` carries the HTTP status when there is one. `retry_after` carries
-    the parsed Retry-After header when the provider sent one -- RetryPolicy
+    the parsed Retry-After header when the provider sent one, and RetryPolicy
     treats it as authoritative.
     """
 
@@ -165,7 +165,7 @@ class RequestTimeout(GatewayError):
     """`request.timeout_s` elapsed before a final result was ready.
 
     The underlying dispatch (queueing, batching, retries) is not aborted by
-    this -- it keeps running in the background and still settles or releases
+    this. It keeps running in the background and still settles or releases
     any budget reservation it holds; only the caller stops waiting for it.
     """
 

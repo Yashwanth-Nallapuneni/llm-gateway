@@ -1,6 +1,6 @@
 """Offline tests for the live-benchmark safety fixes in benchmarks/bench.py:
-cross-run cooldown, the worst-case --max-live-calls ceiling, and excluding
-truncated arms from the reported summary. No network access -- these never
+cross-run cooldown, the worst-case --max-live-calls ceiling and excluding
+truncated arms from the reported summary. No network access: these never
 touch GROQ_API_KEY or api.groq.com; see tests/test_live_openrouter.py for
 the actual live-call tests.
 """
@@ -104,8 +104,7 @@ async def test_cooldown_fires_at_every_arm_boundary_including_across_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The actual confound fix: with --arm-cooldown set, a sleep must happen
-    before every arm -- 2 per run (start-of-run boundary + mid-run boundary)
-    -- not just once between the two arms inside each run."""
+    before every arm, 2 per run (start-of-run boundary + mid-run boundary), not just once between the two arms inside each run."""
     sleeps: list[float] = []
 
     async def fake_sleep(seconds: float) -> None:
@@ -151,7 +150,7 @@ def test_live_refuses_to_start_below_worst_case_ceiling(
 ) -> None:
     """A ceiling sized to the best case (no retries) is exactly what let an
     arm get truncated mid-run in the retracted attempt. run_all_live must
-    refuse to start rather than risk it -- and must refuse before touching
+    refuse to start rather than risk it, and must refuse before touching
     the network, so this needs no real key."""
     monkeypatch.setenv("GROQ_API_KEY", "not-a-real-key")
 

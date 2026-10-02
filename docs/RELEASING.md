@@ -17,7 +17,7 @@ publishers already exist. A new release only needs:
    TestPyPI).
 4. `git tag vX.Y.Z && git push origin vX.Y.Z`. This publishes to PyPI and
    cannot be undone for that version number.
-5. On GitHub, Releases -> Draft a new release, pick the tag, and paste that
+5. On GitHub, Releases -> Draft a new release, pick the tag and paste that
    version's CHANGELOG section as the notes.
 
 The rest of this file is the first-time setup, kept for reference.
@@ -29,8 +29,8 @@ The rest of this file is the first-time setup, kept for reference.
   "Publishing is irreversible" below).
 - **TestPyPI** (https://test.pypi.org) is a separate, throwaway instance of
   the same software, meant for rehearsing an upload without touching the
-  real index. It has its own accounts, its own project namespace, and it is
-  occasionally wiped. Nothing you do there affects the real `aiollm-gateway`
+  real index. It has its own accounts and its own project namespace, and it
+  is occasionally wiped. Nothing you do there affects the real `aiollm-gateway`
   project on PyPI.
 
 Always rehearse on TestPyPI first. It catches problems (bad metadata, a
@@ -42,7 +42,7 @@ the real index.
 `.github/workflows/release.yml` publishes using PyPI's **Trusted
 Publishing**: GitHub Actions proves its identity to PyPI directly via OIDC
 (an ephemeral, cryptographically signed token GitHub issues to the workflow
-run). Nothing is copied, generated, or stored. **You never create a PyPI
+run). Nothing is copied, generated or stored. **You never create a PyPI
 API token, and no secret is ever added to this repository.** You only tell
 PyPI, once, "trust workflow `release.yml` in this specific GitHub repo."
 

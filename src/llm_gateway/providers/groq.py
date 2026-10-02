@@ -91,7 +91,7 @@ def groq_provider(
     # ~6000 tpm on the free tier; tpm is the tighter limit, and larger/popular
     # models report much lower rpm (around 30/min), so rpm stays conservative
     # here too. A caller who knows their model's real limits should override
-    # both -- `on_headers`/`_wire_header_sync` also syncs the live
+    # both. `on_headers`/`_wire_header_sync` also syncs the live
     # `x-ratelimit-*` headers into the limiter automatically.
     rpm_limit: float = 30,
     tpm_limit: float = 6_000,
@@ -105,7 +105,7 @@ def groq_provider(
     """Build a fully configured Groq Provider.
 
     `cost_per_1k_*` default to 0.0 because Groq's pricing varies by model
-    (and the free tier is, well, free) -- pass real numbers if cost-aware
+    (and the free tier is, well, free), so pass real numbers if cost-aware
     routing matters for your setup.
     """
     groq_client = client or GroqClient(
@@ -120,7 +120,7 @@ def groq_provider(
         supports_logprobs=False,
         supports_strict_json=True,
         # Groq has no synchronous multi-prompt batch endpoint (its batch API,
-        # like OpenAI's, is an asynchronous 24h file-based job) -- so the
+        # like OpenAI's, is an asynchronous 24h file-based job), so the
         # gateway's Batcher falls back to concurrent dispatch of individual
         # requests rather than a single grouped call. See Provider.complete_batch.
         supports_batching=False,

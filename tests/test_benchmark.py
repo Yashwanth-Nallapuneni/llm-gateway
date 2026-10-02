@@ -1,6 +1,6 @@
 """Smoke test for benchmarks/bench.py.
 
-Not a benchmark itself -- just: does a tiny run complete quickly and produce
+Not a benchmark itself, just: does a tiny run complete quickly and produce
 the result structure the reporting code expects? benchmarks/ is not part of
 the installed package, so it's imported the same way bench.py imports
 llm_gateway: by inserting its directory onto sys.path.
@@ -111,7 +111,7 @@ async def test_same_seed_reproduces_counts_not_just_prompts() -> None:
     """The documented reproducibility guarantee: deterministic counts
     (requests sent, 429s, successes/failures, cost) must match exactly
     across two runs with the same seed. Wall-clock and per-call latency
-    depend on real scheduling and are explicitly excluded -- see
+    depend on real scheduling and are explicitly excluded; see
     benchmarks/README.md's "Threats to validity"."""
     args = fast_args(n_prompts=8, runs=1, seed=55)
     r1 = await bench.run_all(args)

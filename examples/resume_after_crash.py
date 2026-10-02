@@ -3,7 +3,7 @@
 Run:  python examples/resume_after_crash.py
 
 A RunStore backs the gateway with a SQLite file. The first "process" only
-gets partway through a sweep before it stops -- standing in for a crash.
+gets partway through a sweep before it stops, standing in for a crash.
 The second "process" opens the same store file and runs the exact same
 prompts again: everything already recorded comes straight from the store,
 and only the unfinished prompts actually call the provider.
@@ -38,7 +38,7 @@ async def main() -> None:
         client = MockClient("sweep_co")
 
         # First run: only submit the first N_BEFORE_CRASH prompts, then stop
-        # without finishing the rest -- simulating a process that died
+        # without finishing the rest, simulating a process that died
         # partway through the sweep.
         store = RunStore(store_path, run_id="sweep-1")
         gw = LLMGateway(providers=[MockProvider("sweep_co", client=client)], store=store)

@@ -9,7 +9,7 @@
 
 An async Python layer that sits between your code and a provider's API. It
 paces requests under rate limits, retries what is worth retrying, groups
-prompts to cut round trips, and moves traffic off a provider that starts
+prompts to cut round trips and moves traffic off a provider that starts
 failing.
 
 Python 3.11+, asyncio, **zero runtime dependencies**. Not a proxy, not a
@@ -68,14 +68,14 @@ Input is a `.jsonl` file (one `{"prompt": "..."}` object per line, with
 optional `id`/`max_tokens`/`priority`/`needs_logprobs`/`needs_strict_json`/
 `model`), a `.txt` file (one prompt per line), or `-` for stdin. `--provider
 {mock,groq,openrouter}` selects the backend; for `groq`/`openrouter`, the API
-key comes from `GROQ_API_KEY`/`OPENROUTER_API_KEY` (or `--api-key`) -- it is
+key comes from `GROQ_API_KEY`/`OPENROUTER_API_KEY` (or `--api-key`). It is
 never printed. `--dry-run` estimates prompt count, tokens and cost without
 making any calls, and any paid provider requires a confirmed cost estimate
 (or `--yes`) before it sends a single request. A failed prompt is written as
 an `{"error": ...}` line rather than aborting the run; `gateway.metrics.report()`
 prints to stderr unless `--no-metrics`. `--budget USD` caps total spend for the
 run: once committed spend would cross it, further prompts fail fast with a
-budget-exceeded error instead of being sent to a provider -- results already
+budget-exceeded error instead of being sent to a provider. Results already
 obtained are still written out in full, and the run exits non-zero with a
 count of how many prompts were skipped. Each prompt holds its worst-case
 cost (priced at `--max-tokens` output tokens) until the real cost is known,
@@ -100,7 +100,7 @@ report.
 
 `llm-gateway models --provider groq` (or `openrouter`) prints the model IDs
 that provider currently offers, one per line and sorted, straight from its
-`GET /models` endpoint (`--contains TEXT` filters by substring) -- useful
+`GET /models` endpoint (`--contains TEXT` filters by substring), which is useful
 since Groq in particular retires models often and a hardcoded default can
 go stale.
 
@@ -118,7 +118,7 @@ that already syncs its buckets from real response headers. See
 
 `--store PATH` records every prompt's outcome in a SQLite file as the run
 goes, keyed by a hash of the fields that determine the answer (model,
-prompt, max_tokens, capability flags -- not priority or metadata). Rerun
+prompt, max_tokens and capability flags, but not priority or metadata). Rerun
 the same command with `--store` pointing at that file and `--resume`, and
 prompts already completed are served straight from the file instead of
 calling the provider again; only what never finished gets sent out:
@@ -134,7 +134,7 @@ rows in it, so a stale or mistyped path fails loudly instead of silently
 merging into an unrelated run. The run summary reports how many prompts
 were served from the store versus freshly called; the metrics table
 above that line counts only the fresh calls. Replay returns each
-prompt's first answer, not a new sample -- correct for reproducing an eval,
+prompt's first answer, not a new sample. That is correct for reproducing an eval,
 not for resampling at temperature > 0.
 
 Use `--store` for any run you might stop with Ctrl-C: `--output` is only
@@ -183,7 +183,7 @@ limit, do not add it.
 The core is complete, tested and typed, and adapters for Groq and OpenRouter
 are implemented and unit-tested against a fake HTTP server. Both adapters
 have also been run against their real APIs. OpenRouter was validated live
-once, against real completions, logprobs, and both a bad-model and a
+once, against real completions, logprobs and both a bad-model and a
 bad-key error path; it also confirmed OpenRouter sends no rate-limit
 headers, which is why the adaptive rate limiter above exists. See
 `docs/LIVE_TESTING.md` for the full breakdown and cost (about $0.0045). The
@@ -209,7 +209,7 @@ run's last arm and the next run's first arm, so account rate-limit state
 could carry across run boundaries. Run 2's gateway arm absorbed 15 real
 429s from run 1's leftover state as a result, and its naive arm's "17
 failures" were actually the harness's own `--max-live-calls` budget running
-out mid-arm, not real rejections -- an earlier version of this section
+out mid-arm, not real rejections. An earlier version of this section
 quoted that as a 57.5% success figure; it wasn't a real result, and the
 mistake has been corrected here (never cite it).
 
@@ -223,7 +223,7 @@ rejections)**, at roughly 31s per run; naive succeeded on 107/120
 here: it paces itself under the account's real rate ceiling instead of
 bursting and eating rejections the way the naive loop does, so it trades
 wall-clock time for zero dropped prompts. This does **not** reproduce the
-simulated benchmark's wall-clock win above, and it does not need to --
+simulated benchmark's wall-clock win above, and it does not need to, because
 the two measure different things. Read
 [benchmarks/README.md](https://github.com/Yashwanth-Nallapuneni/llm-gateway/blob/main/benchmarks/README.md#live-results-real-groq-api) for
 the full breakdown of all four attempts, including the two earlier

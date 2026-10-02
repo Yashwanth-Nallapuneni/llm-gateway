@@ -259,7 +259,7 @@ async def test_concurrency_cap_bounds_simultaneous_calls():
 
 
 async def test_non_batching_fallback_dispatches_concurrently():
-    # No client.complete_batch -- forces Provider.complete_batch() onto the
+    # No client.complete_batch, which forces Provider.complete_batch() onto the
     # fallback path used by real non-batching providers (Groq, OpenRouter).
     client = MockClient("seq", latency=0.2)
     provider = MockProvider(
@@ -405,7 +405,7 @@ async def test_injected_clock_drives_latency_and_blocked_metrics():
         resp = await gw.submit(LLMRequest("hello"))
 
     # 4 clock reads for a single successful, non-retried request:
-    # enqueued_at, blocked_start, the post-acquire blocked-time read, and the
+    # enqueued_at, blocked_start, the post-acquire blocked-time read and the
     # final "now" used for end-to-end latency. That is exactly 3 steps.
     assert resp.latency_s == pytest.approx(3 * step)
     assert gw.metrics._p("a").blocked_seconds == pytest.approx(step)
@@ -479,7 +479,7 @@ async def test_one_permanent_failure_among_fifteen_healthy_is_isolated():
 
 async def test_true_batch_provider_still_fails_as_a_unit():
     # supports_batching=True: one call really is one HTTP round trip, so a
-    # failure still has to take the whole group down together -- unlike the
+    # failure still has to take the whole group down together, unlike the
     # fan-out path above, there is no such thing as "3 of 4 succeeded".
     client = MockClient("atomic", fail_status=503)
     provider = MockProvider("atomic", client=client)  # supports_batching=True (default)
@@ -496,7 +496,7 @@ async def test_true_batch_provider_still_fails_as_a_unit():
 
 async def test_complete_batch_settled_shares_one_exception_for_a_true_batch_failure():
     # The internal per-request view still reports a real batch endpoint's
-    # failure as one event, not four -- it hands every entry back the same
+    # failure as one event, not four. It hands every entry back the same
     # exception object rather than four separately-raised equal ones. The
     # gateway's breaker/metrics accounting for the true-batch path depends
     # on being able to tell "one call failed" from "four calls failed" by
@@ -542,8 +542,8 @@ async def test_partial_failure_leaves_no_orphaned_tasks_or_futures():
 async def test_whole_provider_outage_still_fails_over_every_request_in_the_batch():
     # Existing failover behaviour, generalized past a batch size of 1: when
     # every request in a multi-request dispatch fails against a
-    # non-batching provider, all of them -- not just the one blocking the
-    # retry budget -- move to the backup together.
+    # non-batching provider, all of them (not just the one blocking the
+    # retry budget) move to the backup together.
     client = MockClient("dead", fail_status=503)
     dead = MockProvider(
         "dead", client=client, supports_batching=False, max_concurrency=16

@@ -23,7 +23,7 @@ class ProviderRouter:
         # Capability is a hard constraint, checked before anything else. A
         # request that needs logprobs is not served by a provider without
         # them, so this must filter candidates out rather than just score
-        # them down -- otherwise, under enough load, the scoring penalty
+        # them down, because otherwise, under enough load, the scoring penalty
         # gets outweighed and the request silently routes somewhere that
         # can't actually satisfy it.
         if req.needs_logprobs and not caps.supports_logprobs:
@@ -50,7 +50,7 @@ class ProviderRouter:
         """Sort key over the survivors. Lower sorts first."""
         # Headroom (how much rate-limit capacity is free) is ranked before
         # cost. A cheaper provider with an empty bucket doesn't actually
-        # save money -- it just blocks in acquire() -- so ranking on cost
+        # save money (it just blocks in acquire()), so ranking on cost
         # first would stampede all traffic onto the cheapest provider and
         # leave the others idle.
         headroom = provider.limiter.headroom
@@ -87,7 +87,7 @@ class ProviderRouter:
             # Checked after capability but before ranking. A provider with
             # an open circuit breaker is known-bad right now, and since
             # nothing is getting through it, its rate-limit headroom would
-            # look artificially excellent -- so it must be excluded, not
+            # look artificially excellent, so it must be excluded, not
             # merely scored down.
             if not provider.breaker.allows_request():
                 reasons[provider.name] = (
@@ -103,7 +103,7 @@ class ProviderRouter:
             # provider anyway (which could return a well-formed response
             # missing a capability the caller actually needed). The error
             # carries the per-provider reasons so the operator knows whether
-            # to raise a limit, fix a key, or add a capability.
+            # to raise a limit, fix a key or add a capability.
             raise NoEligibleProviderError(reasons)
 
         eligible.sort(key=self._score)

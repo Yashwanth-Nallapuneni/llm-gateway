@@ -3,7 +3,7 @@
 `RunStore` sits in front of the gateway and answers one question per
 request: has this exact prompt already been paid for? If yes, it hands back
 the stored answer and never touches the network. If no, it records that a
-call is about to be made, then records what came back -- so killing the
+call is about to be made, then records what came back, so killing the
 process partway through a large run loses at most the one call that was in
 flight, not everything already done.
 
@@ -29,7 +29,7 @@ from .types import LLMRequest, LLMResponse
 # --------------------------------------------------------------------------
 #
 # The key is a hash over the fields that determine the answer a provider
-# would give: model, prompt, max_tokens, and the two capability flags.
+# would give: model, prompt, max_tokens and the two capability flags.
 # `priority` and `metadata` are left out on purpose, since they never reach
 # the provider and don't affect the answer.
 #
@@ -167,18 +167,18 @@ class RunStore:
         """Claim `key` for a call about to be made.
 
         Returns the stored response if another attempt already finished it
-        since the caller's own `get_response` check -- a benign race, and
+        since the caller's own `get_response` check (a benign race), and
         the caller should just use that response and skip the call. Returns
         `None` otherwise: the row is now `in_flight`, and the caller should
         call the provider and report back via `complete()` or `fail()`.
 
-        A row that is `pending`, `failed`, or new all reserve the same way;
+        A row that is `pending`, `failed` or new all reserve the same way;
         `failed` is included so a resumed run retries prompts that actually
         failed, not ones that already succeeded. A row already `in_flight`
         (a concurrent duplicate submission of the same key) is claimed
         again rather than made to wait, which can cause two concurrent
-        calls for one key -- a duplicate like any other here, not
-        corruption, since whichever call finishes last simply wins the row.
+        calls for one key (a duplicate like any other here, not
+        corruption, since whichever call finishes last simply wins the row).
         """
         return await asyncio.to_thread(self._sync_reserve, request, key)
 

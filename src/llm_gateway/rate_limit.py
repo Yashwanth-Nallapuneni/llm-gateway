@@ -41,7 +41,7 @@ class TokenBucket:
         self._configured_rate = self.refill_rate
 
         # monotonic() only ever moves forward, unlike time.time(), which can
-        # jump backward on an NTP sync -- that would make elapsed time go
+        # jump backward on an NTP sync, which would make elapsed time go
         # negative and lock the limiter up.
         self._clock = clock or time.monotonic
         self._sleep = sleep or asyncio.sleep
@@ -85,7 +85,7 @@ class TokenBucket:
         Must not busy-wait. Must be correct under concurrent callers.
         """
         # A request bigger than the bucket's capacity can never be
-        # satisfied, since _refill() caps _tokens at capacity -- fail
+        # satisfied, since _refill() caps _tokens at capacity, so fail
         # loudly here instead of hanging the caller forever.
         if tokens > self.capacity:
             raise ValueError(
@@ -93,7 +93,7 @@ class TokenBucket:
             )
 
         # Loops and re-checks after every sleep, rather than sleeping once
-        # and taking the tokens on trust -- another coroutine could grab the
+        # and taking the tokens on trust, because another coroutine could grab the
         # same tokens while this one was asleep.
         while True:
             async with self._lock:
@@ -136,7 +136,7 @@ class TokenBucket:
         used to adjust refill timing.
 
         The local bucket is only ever a model, seeded from a configured
-        limit and updated by guessing at elapsed time -- it can drift from
+        limit and updated by guessing at elapsed time, so it can drift from
         what the provider actually enforces. This method folds the
         provider's own count back in to correct that drift.
         """
@@ -162,7 +162,7 @@ class TokenBucket:
         # `reset_in` is accepted but deliberately not folded into `_tokens`
         # or `_last_refill`. This bucket models a continuous refill, while
         # the provider's `reset_in` describes a discrete window that jumps
-        # back to full capacity at one instant -- the two models disagree
+        # back to full capacity at one instant, and the two models disagree
         # about the shape of the curve in between, so there's no clean way
         # to combine them without guessing at the provider's own algorithm.
         # It's kept as a parameter anyway because `sync_from_headers`
@@ -188,7 +188,7 @@ class TokenBucket:
 
         The increase is additive (a small fixed step, 1% of the configured
         rate) rather than multiplicative, so recovery is deliberately much
-        slower than the backoff in throttle() -- that asymmetry is the
+        slower than the backoff in throttle(). That asymmetry is the
         point of AIMD. Never grows past the originally configured rate.
         """
         self._refill()

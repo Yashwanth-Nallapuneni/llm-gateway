@@ -1,4 +1,4 @@
-# Live provider tests — runs the test suite against the REAL Groq API.
+# Live provider tests: runs the test suite against the REAL Groq API.
 #
 # This workflow is manual-only. It does not run on every push or PR because
 # it costs real API quota and depends on a third-party service being up; a
@@ -47,14 +47,14 @@
 # live tests skip themselves (they check for the env var and self-skip). This
 # job deliberately does NOT let that pass as green, though: a run where every
 # live test self-skipped never actually exercised the real Groq API, so a
-# green badge in that state would be pure false assurance -- indistinguishable
+# green badge in that state would be pure false assurance, indistinguishable
 # from the outside from a run where the tests genuinely passed. The
 # "Check live test results actually ran" step below parses the JUnit XML
 # pytest writes and fails the job with a clear message if fewer than the
 # expected number of live tests actually PASSED (as opposed to having been
-# skipped) -- see that step for the exact floor and reasoning. So: red here
-# now means either a real test failure/error, or GROQ_API_KEY missing/wrong --
-# both are things a maintainer with repo-secret access needs to act on, which
+# skipped). See that step for the exact floor and reasoning. So: red here
+# now means either a real test failure/error, or GROQ_API_KEY missing/wrong.
+# Both are things a maintainer with repo-secret access needs to act on, which
 # is exactly who is expected to run this manual/scheduled workflow.
 #
 # Security note: `pull_request_target` is intentionally never used here. That
@@ -70,7 +70,7 @@ name: Live provider tests
 on:
   workflow_dispatch: {}
   schedule:
-    # Mondays at 06:00 UTC — see "Schedule decision" comment above.
+    # Mondays at 06:00 UTC. See "Schedule decision" comment above.
     - cron: "0 6 * * 1"
 
 permissions:
@@ -98,14 +98,14 @@ jobs:
         run: pip install -e ".[dev]"
 
       # GROQ_API_KEY and OPENROUTER_API_KEY are scoped to this step only (not
-      # the job or workflow), and neither is ever echoed, dumped via `env`,
+      # the job or workflow), and neither is ever echoed, dumped via `env`
       # or exposed via `set -x`. OPENROUTER_API_KEY is optional: if the
       # "live-tests" environment doesn't have it configured, this resolves
       # to an empty string, and every test in tests/test_live_openrouter.py
-      # self-skips via its own skipif -- it does not fail the job.
+      # self-skips via its own skipif. It does not fail the job.
       #
       # This step intentionally does not fail the job by itself on a non-zero
-      # pytest exit -- the exit code is captured into $GITHUB_ENV and checked
+      # pytest exit. The exit code is captured into $GITHUB_ENV and checked
       # explicitly by the next step, alongside the JUnit XML pass/skip
       # counts, so both "a live test actually failed" and "every live test
       # quietly self-skipped" are reported with one clear message instead of
@@ -123,14 +123,14 @@ jobs:
       # Guards against the exact failure mode this workflow exists to catch:
       # a green run that verified nothing because GROQ_API_KEY was never
       # configured (or was configured wrong) and every live test
-      # self-skipped. pytest alone can't surface that -- "all skipped" is a
-      # clean exit 0 -- so this step parses the JUnit XML from the step above
+      # self-skipped. pytest alone can't surface that ("all skipped" is a
+      # clean exit 0), so this step parses the JUnit XML from the step above
       # and asserts a minimum number of tests actually PASSED (not skipped).
       #
       # The floor is 5, not 6: tests/test_live_groq.py currently defines 6
       # tests under @pytest.mark.live, and exactly one of them
-      # (test_real_429_with_retry_after) is a *permanent*, intentional skip
-      # -- it deliberately does not attempt to provoke a real 429, to avoid
+      # (test_real_429_with_retry_after) is a *permanent*, intentional skip.
+      # It deliberately does not attempt to provoke a real 429, to avoid
       # burning Groq quota (see that test's own docstring and
       # docs/LIVE_TESTING.md). So "every live test genuinely ran" looks like
       # 5 passed + 1 skipped, never 6 passed. If tests/test_live_groq.py
@@ -139,11 +139,11 @@ jobs:
       # This floor is deliberately based on Groq alone, so it holds whether
       # or not OPENROUTER_API_KEY is configured. Without it,
       # tests/test_live_openrouter.py's tests all self-skip via their own
-      # skipif and contribute 0 to `passed` -- Groq's 5 still clear the
+      # skipif and contribute 0 to `passed`, so Groq's 5 still clear the
       # floor. With it, OpenRouter's tests add their own passes on top,
       # which only raises `passed` further and never breaks the check.
       #
-      # This step never prints GROQ_API_KEY or any other secret -- only test
+      # This step never prints GROQ_API_KEY or any other secret: only test
       # names and pass/fail/skip counts read back from the JUnit XML.
       - name: Check live test results actually ran
         if: always()
@@ -159,7 +159,7 @@ jobs:
               root = ET.parse("live-results.xml").getroot()
           except FileNotFoundError:
               print(
-                  "::error::live-results.xml was not produced -- pytest did not "
+                  "::error::live-results.xml was not produced: pytest did not "
                   "run to completion. Check the previous step's log."
               )
               sys.exit(1)
@@ -195,14 +195,14 @@ jobs:
 
           if pytest_exit_code != "0":
               problems.append(
-                  f"pytest exited with status {pytest_exit_code} -- one or "
+                  f"pytest exited with status {pytest_exit_code}: one or "
                   "more live tests failed or errored."
               )
 
           if passed < MIN_LIVE_PASSED:
               problems.append(
                   f"only {passed} live test(s) actually passed (need at "
-                  f"least {MIN_LIVE_PASSED}) -- live tests were skipped. Is "
+                  f"least {MIN_LIVE_PASSED}). Live tests were skipped. Is "
                   "the GROQ_API_KEY secret configured for the 'live-tests' "
                   "environment? A green run must mean the tests actually "
                   "executed against the real Groq API, not that they "

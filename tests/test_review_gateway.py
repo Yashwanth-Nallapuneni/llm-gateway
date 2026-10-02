@@ -3,7 +3,7 @@
 Both bugs share the same shape: a request's future is left unresolved
 forever because nothing on the failure path calls set_exception/set_result
 on it. Before the corresponding fix, each test below hangs (and would only
-be caught by pytest-timeout / CI wall-clock, not by an assertion) -- so each
+be caught by pytest-timeout / CI wall-clock, not by an assertion), so each
 test wraps the awaited call in `asyncio.wait_for` with a short deadline and
 asserts it resolves, not just that it eventually raises the right thing.
 """

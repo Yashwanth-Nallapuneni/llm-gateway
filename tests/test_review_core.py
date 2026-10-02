@@ -1,7 +1,7 @@
 """Targeted regression tests written during a correctness review of
 rate_limit.py, retry.py, batching.py, queue.py, breaker.py and routing.py.
 
-Offline, fast, deterministic -- fake clocks only, no network, no real sleeps
+Offline, fast, deterministic: fake clocks only, no network, no real sleeps
 beyond what the fake clock/event loop needs to settle.
 """
 
@@ -43,8 +43,8 @@ def test_delay_for_does_not_overflow_on_a_huge_attempt_count() -> None:
     A caller can configure a large max_attempts (nothing stops them), and
     the retry loop passes the running `attempt` straight through. Before
     the fix, `2.0 ** attempt` raised OverflowError once attempt reached the
-    low thousands -- long before the min(raw, max_delay) clamp got a
-    chance to bound it -- turning "give up gracefully after many retries"
+    low thousands, long before the min(raw, max_delay) clamp got a
+    chance to bound it, turning "give up gracefully after many retries"
     into a crash instead.
     """
     policy = RetryPolicy(

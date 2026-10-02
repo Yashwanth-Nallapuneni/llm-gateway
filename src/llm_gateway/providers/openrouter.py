@@ -29,7 +29,7 @@ class OpenRouterClient(OpenAICompatibleClient):
 
     def extra_body_params(self, request: LLMRequest) -> dict[str, Any]:
         # Only force parameter-honoring routing when this particular request
-        # actually needs a parameter honored -- a plain request is free to
+        # actually needs a parameter honored, since a plain request is free to
         # go to any upstream, which keeps the widest routing pool (and
         # lowest latency/cost) for the common case.
         if request.needs_logprobs or request.needs_strict_json:
@@ -38,7 +38,7 @@ class OpenRouterClient(OpenAICompatibleClient):
 
     def _raise_for_status(self, response: Any) -> None:
         # 402 = out of credit. Mapped explicitly, rather than falling through
-        # to the generic 4xx path, so the message is clear -- RetryPolicy
+        # to the generic 4xx path, so the message is clear. RetryPolicy
         # already treats it as non-retryable (status < 500), this just adds
         # the specific "add credit" wording.
         #
@@ -110,7 +110,7 @@ def openrouter_provider(
     endpoint, so picking one for the caller would be arbitrary.
     `supports_logprobs`/`supports_strict_json` default to True because the
     router-level `require_parameters` guard (see OpenRouterClient above)
-    is what actually keeps a request honest -- but set them to False if you
+    is what actually keeps a request honest, but set them to False if you
     know the specific model you're pinning never supports these, to save a
     failed round-trip.
     """
@@ -126,7 +126,7 @@ def openrouter_provider(
         supports_logprobs=supports_logprobs,
         supports_strict_json=supports_strict_json,
         # OpenRouter has no batch endpoint whatsoever (it is a routing layer
-        # over other providers' synchronous APIs) -- the gateway's Batcher
+        # over other providers' synchronous APIs), so the gateway's Batcher
         # falls back to concurrent dispatch of individual requests. See
         # Provider.complete_batch.
         supports_batching=False,

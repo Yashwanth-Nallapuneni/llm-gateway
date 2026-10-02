@@ -15,7 +15,7 @@ class _RandomLike(Protocol):
 
     Both `random.Random` instances and the `random` module itself expose a
     module/instance-level `uniform(a, b) -> float`, which is all this file
-    needs -- this Protocol lets mypy see through the union without pinning
+    needs. This Protocol lets mypy see through the union without pinning
     the injected RNG to a concrete class.
     """
 
@@ -62,7 +62,7 @@ class RetryPolicy:
     def should_retry(self, exc: Exception, attempt: int) -> bool:
         """Retryable: 429, 500, 502, 503, 504, timeouts, conn errors.
 
-        Not retryable: 400, 401, 403, 404, 422 -- identical failure on retry.
+        Not retryable: 400, 401, 403, 404, 422: identical failure on retry.
         """
         # Check the attempt budget separately from whether the error is
         # retryable, so the two questions never get conflated in the logs.
@@ -113,7 +113,7 @@ class RetryPolicy:
 
         if retry_after is not None:
             # A provider's Retry-After header is authoritative, so take the
-            # larger of it and our own backoff (max, never min) -- returning
+            # larger of it and our own backoff (max, never min), since returning
             # too early just earns another 429.
             delay = max(float(retry_after), delay)
 

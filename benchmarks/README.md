@@ -5,7 +5,7 @@
 This compares two arms sending the same prompts: **naive**, a bounded
 `asyncio.gather` loop with proper retry (backoff, jitter, `Retry-After`)
 but no rate limiting, versus **gateway**, `llm_gateway.LLMGateway` with a
-token bucket set to the server's real limits, batching, and the same
+token bucket set to the server's real limits, batching and the same
 retry policy. Both are pointed at a server with an enforced rate limit.
 
 **Simulated result** (200 prompts against a 190/min server, over the
@@ -24,10 +24,10 @@ against this account's real limits.
 Configuration B below): both arms hit 100% success with near-identical
 wall-clock, because there is nothing to pace against.
 
-Do not cite 57.5% success or "lost 17 of 40" as a real result -- that
+Do not cite 57.5% success or "lost 17 of 40" as a real result. That
 number was retracted (see the note before it below) and only ever
 described a run invalidated by a `--max-live-calls` truncation. The full
-detailed results, per-run tables, and the history of prior benchmark
+detailed results, per-run tables and the history of prior benchmark
 attempts (including that retraction) are in the sections below.
 
 `bench.py` answers one question as honestly as a simulated harness can:
@@ -40,10 +40,10 @@ failures, what's the actual difference between
   strawman: the only thing it's missing on purpose is rate limiting,
   because that's the variable under test. It reuses `llm_gateway.RetryPolicy`
   for the backoff/jitter/classification logic itself (not for the rate
-  limiting, batching, or failover the gateway adds), so both arms get the
+  limiting, batching or failover the gateway adds), so both arms get the
   same quality of retry decision.
 - **gateway**: `llm_gateway.LLMGateway`, configured with a token bucket set
-  to the server's real limits, request batching, and the same retry
+  to the server's real limits, request batching and the same retry
   policy.
 
 Both arms are pointed at their own instance of the same simulated server
@@ -57,7 +57,7 @@ python3 benchmarks/bench.py --n-prompts 200 --runs 5 --seed 42 --markdown
 ```
 
 That one command reproduces the run below end to end: it builds the
-workload, runs both arms `--runs` times, and prints a stdout table plus
+workload, runs both arms `--runs` times and prints a stdout table plus
 (with `--markdown`) a table ready to paste elsewhere. Add `--json out.json`
 to also dump every raw per-run number, so a skeptical reader can recompute
 the medians and percentiles themselves instead of taking the summary on
@@ -166,7 +166,7 @@ Reproduce with `python3 benchmarks/bench.py --n-prompts 150 --runs 5 --seed 42`.
 
 - **Configuration B is the honest counterweight: below the provider's limit,
   this library buys you nothing.** Identical requests, identical success,
-  identical 429 count (zero), and slightly worse p50 from batching wait. If
+  identical 429 count (zero) and slightly worse p50 from batching wait. If
   you are not near a rate limit, do not add this dependency.
 
 ### Two corrections made to this benchmark
@@ -263,7 +263,7 @@ arm, so a shared account's rate-limit state could still carry across that
 boundary. It is kept below because it is what first exposed the gap
 (run 2's gateway arm picked up 15 real 429s it should not have) and
 because `--max-live-calls` truncated its second run's naive arm mid-arm,
-which is the source of a retracted "57.5%" figure -- see the note before
+which is the source of a retracted "57.5%" figure. See the note before
 the per-run table. **Do not read this section as the current live
 result; see "Attempt 4" below for the corrected run with the cross-run
 cooldown fix.**
@@ -383,9 +383,9 @@ what it cost.
 ### Attempt 4: cooldown at every arm boundary (the current, clean result)
 
 This is the fix for the gap attempt 3 left open. `_cooldown()` and the
-run loop in `run_all_live`/`run_all_sim` now sleep before *every* arm --
+run loop in `run_all_live`/`run_all_sim` now sleep before *every* arm,
 including the boundary between one run's last arm and the next run's
-first arm -- not just between the two arms inside a single run. The
+first arm, not just between the two arms inside a single run. The
 `--max-live-calls` ceiling is also now sized to the worst case (every
 prompt in every arm of every run exhausting its full `--max-attempts`
 retry budget), and `bench.py` refuses to start if the ceiling doesn't
@@ -488,7 +488,7 @@ output is in `/tmp/bench_out/live_run3.log` (also local).
   below.
 
 The rest of this section (attempt 3's reading) is kept because its
-caveats about variance, the token-vs-request binding constraint, and what
+caveats about variance, the token-vs-request binding constraint and what
 the live run does and does not confirm still apply to attempt 4's numbers
 essentially unchanged; only the "clean result" framing above supersedes
 it.
@@ -496,9 +496,9 @@ it.
 - **The clean result is run 1: naive 82.5% success vs gateway 100%
   success, 0 rejections, at a real cost of 32.5s vs 7.4s wall-clock.** Run
   1 is the only pairing where both arms ran to completion untouched by the
-  call-budget ceiling: naive sent 67 requests, took 34 real 429s, and
+  call-budget ceiling: naive sent 67 requests, took 34 real 429s and
   finished 33/40 prompts (7 genuine failures); the gateway sent 40
-  requests, took 0 429s, and finished 40/40. That is the real
+  requests, took 0 429s and finished 40/40. That is the real
   result of this benchmark. **Run 2's naive arm is not a second data
   point for this comparison and must not be quoted as one:** it stopped
   after 23 requests because this task's `--max-live-calls 185` ceiling was
@@ -674,7 +674,7 @@ Read this before trusting any number above.
 - **This is a simulated server, not a real provider.** `SimClient` enforces
   a sliding-window RPM limit and injects latency/failures the same *shape*
   a real API uses, but it has none of a real provider's queueing behavior,
-  regional routing, per-key vs per-org limits, or the myriad undocumented
+  regional routing, per-key vs per-org limits or the myriad undocumented
   quirks (soft throttling before the hard limit, warm-up penalties, etc.)
   that real gateways exhibit. A result here is a statement about this
   simulation, not a guarantee about any specific real provider.
@@ -733,7 +733,7 @@ Read this before trusting any number above.
   successes, failures, cost) are bit-for-bit identical across repeated
   invocations: `tests/test_benchmark.py` asserts this directly. Wall-clock
   time and per-call latency are not: they depend on real OS scheduling,
-  asyncio event-loop timing, and machine load, and will vary run to run
+  asyncio event-loop timing and machine load, and will vary run to run
   and machine to machine even with the same seed. Report wall-clock as a
   distribution (which `--runs` does), never as a single number, for exactly
   this reason.
@@ -753,7 +753,7 @@ Read this before trusting any number above.
   rejected call, so one rejected batch call counts once even though it
   fails every prompt in that batch).
 - **latency p50/p95/p99**: end-to-end, per prompt, from submission to
-  final success. Includes queueing, retries, and (for gateway) time spent
+  final success. Includes queueing, retries and (for gateway) time spent
   waiting in the batcher and the rate limiter. Computed only over prompts
   that succeeded.
 - **success rate**: successes / total prompts submitted, per run.

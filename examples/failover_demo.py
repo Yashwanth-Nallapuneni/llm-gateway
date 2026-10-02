@@ -4,7 +4,7 @@ Run:  python examples/failover_demo.py
 
 The primary is cheap, so the router prefers it. Partway through the run it
 starts returning 503 on every call. The retry policy absorbs the first few,
-the circuit breaker trips, and the router stops offering it work at all.
+the circuit breaker trips and the router stops offering it work at all.
 """
 
 from __future__ import annotations

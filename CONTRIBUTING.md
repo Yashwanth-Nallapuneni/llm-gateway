@@ -6,7 +6,7 @@
 pip install -e ".[dev,http]"
 ```
 
-`dev` pulls in pytest, pytest-asyncio, pytest-cov, ruff, and mypy (it
+`dev` pulls in pytest, pytest-asyncio, pytest-cov, ruff and mypy (it
 already includes httpx, but `http` is listed explicitly above since it's
 the extra you'd install standalone to use the HTTP-backed providers).
 Requires Python 3.11+.
@@ -17,7 +17,7 @@ See `.github/workflows/ci.yml`. Three jobs, all must pass:
 
 - **test**: `pytest tests/ -q --cov=llm_gateway --cov-report=xml --cov-report=term`,
   across Python 3.11-3.14.
-- **lint**: `ruff check .`, `ruff format --check .`, and `mypy`.
+- **lint**: `ruff check .`, `ruff format --check .` and `mypy`.
 - **build**: `python -m build`, then `twine check dist/*`.
 
 Run the same commands locally before opening a PR.

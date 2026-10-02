@@ -90,7 +90,7 @@ class LLMGateway:
         self._waiting: dict[int, QueuedRequest] = {}
         # Set if the dispatcher loop itself dies. Without this, a crash in the
         # dispatcher leaves every caller awaiting a future nobody will ever
-        # resolve -- the program hangs instead of reporting the error.
+        # resolve, so the program hangs instead of reporting the error.
         self._fatal: BaseException | None = None
 
         # Let the batcher see outstanding dispatches, so "queue is empty" is
@@ -117,7 +117,7 @@ class LLMGateway:
         self._dispatcher = None
         self._workers.clear()
         # Answer every caller still waiting, wherever its request was (queue,
-        # batcher, or mid-dispatch); otherwise their submit() waits forever.
+        # batcher or mid-dispatch); otherwise their submit() waits forever.
         self._drain_with_error(GatewayError("gateway closed before the request finished"))
         for entry in list(self._waiting.values()):
             if not entry.future.done():
@@ -159,7 +159,7 @@ class LLMGateway:
 
         Raises ProviderError when every attempt fails, NoEligibleProviderError
         when no provider can take the request, BudgetExceeded when the budget
-        has no room, RequestTimeout when `request.timeout_s` passes first, and
+        has no room, RequestTimeout when `request.timeout_s` passes first and
         GatewayError if the gateway is closed while the request is waiting.
         All of these are GatewayError subclasses, so one except clause can
         catch them all.
@@ -190,7 +190,7 @@ class LLMGateway:
     ) -> LLMResponse:
         """Store-backed path: check first, reserve, call, then durably
         record the outcome. See store.py for why `reserve`/`complete`/
-        `fail` are ordered the way they are -- this is just the caller of
+        `fail` are ordered the way they are: this is just the caller of
         that contract.
         """
         key = idempotency_key(request)
@@ -202,7 +202,7 @@ class LLMGateway:
         # `reserve` can itself return a cached response: another attempt
         # (in this process or a previous one, resumed from the same file)
         # finished this exact key between the `get_response` above and now.
-        # That is a benign race, not an error -- use the answer, skip the
+        # That is a benign race, not an error: use the answer, skip the
         # call.
         raced = await store.reserve(request, key)
         if raced is not None:
@@ -331,9 +331,9 @@ class LLMGateway:
                     for unused in candidates[i:]:
                         unused.breaker.release_probe()
                     break
-                # `_call_with_retry` resolves every entry it can -- partially,
+                # `_call_with_retry` resolves every entry it can (partially,
                 # for a non-batching provider whose members fail
-                # independently -- and hands back only the ones it could
+                # independently) and hands back only the ones it could
                 # not. Only those move on to the next candidate; a
                 # true-batch provider either resolves the whole set or none
                 # of it, so this degenerates to the old all-or-nothing
@@ -358,7 +358,7 @@ class LLMGateway:
         except Exception as exc:
             # An unexpected bug anywhere above (not one of the already-handled
             # provider/budget/routing failure paths) would otherwise propagate
-            # out of this task with nobody awaiting it -- every future for
+            # out of this task with nobody awaiting it. Every future for
             # this batch would then hang forever instead of surfacing the
             # error to the caller who is actually waiting on it.
             self._fail_batch(batch, exc)
@@ -385,8 +385,8 @@ class LLMGateway:
         request ends up costing until it settles.
 
         A request whose worst-case reservation does not fit the remaining
-        budget fails immediately with `BudgetExceeded`/`TokenBudgetExceeded`
-        -- it is not added to the returned batch, so it never enters the
+        budget fails immediately with `BudgetExceeded`/`TokenBudgetExceeded`.
+        It is not added to the returned batch, so it never enters the
         retry/failover loop; running out of money is not a provider fault.
         """
         assert self.budget is not None
@@ -428,7 +428,7 @@ class LLMGateway:
         batch awareness. Anything larger goes through
         `Provider.complete_batch_settled()`, which is itself either the
         all-or-nothing call a true-batch provider makes it, or N
-        independent calls for a fan-out one -- this method does not need
+        independent calls for a fan-out one. This method does not need
         to know which; it only needs the per-request outcomes either way.
         """
         if len(requests) == 1:
@@ -442,7 +442,7 @@ class LLMGateway:
             # A provider that answers a batch of N with fewer than N
             # responses would otherwise leave the unmatched callers awaiting
             # futures nobody resolves. Treat it as one failure shared by
-            # every request in the round -- the same way a true-batch
+            # every request in the round, the same way a true-batch
             # provider failing outright is one failure shared by all of
             # them. status=None makes it retryable.
             short_batch_exc: Exception = ProviderError(
@@ -462,13 +462,13 @@ class LLMGateway:
         """Drive retries for `batch` against `provider`.
 
         Returns `(leftover, last_exc)`. `leftover` is the subset of `batch`
-        this provider could not resolve inside its retry budget -- empty
-        when everything succeeded -- for the caller to hand to the next
+        this provider could not resolve inside its retry budget (empty
+        when everything succeeded) for the caller to hand to the next
         candidate provider. `last_exc` is the most recent failure seen, kept
         so the caller has something to report if every provider is
         eventually exhausted. Every entry NOT in `leftover` has already had
         its future resolved with a successful response by the time this
-        returns -- callers must not resolve them again.
+        returns. Callers must not resolve them again.
 
         `attempt` is shared by every entry still `pending` in a round: they
         were dispatched together, so they back off together too (one
@@ -491,8 +491,8 @@ class LLMGateway:
                 # provider's admission (and, in HALF_OPEN, its single probe
                 # permit) when it selected the provider; checking again
                 # here would spend a second permit that does not exist,
-                # reject our own probe, and leave the breaker stuck
-                # HALF_OPEN with an in-flight probe that never resolves --
+                # reject our own probe and leave the breaker stuck
+                # HALF_OPEN with an in-flight probe that never resolves, so
                 # a provider that has recovered would never be used again.
                 if attempt > 0:
                     provider.breaker.check()
@@ -504,8 +504,8 @@ class LLMGateway:
 
                 # The concurrency slot is acquired inside provider.complete()
                 # / provider.complete_batch_settled(), around each
-                # individual network call -- not here, and not across the
-                # rate-limiter wait above or the retry sleep below.
+                # individual network call (not here, and not across the
+                # rate-limiter wait above or the retry sleep below).
                 # Acquiring it per call (rather than once per batch, here)
                 # is what lets a non-batching provider's fallback dispatch
                 # many requests concurrently while max_concurrency still
@@ -516,7 +516,7 @@ class LLMGateway:
                 results = await self._settle(provider, requests)
             except Exception as exc:
                 # The breaker check or the limiter itself raised, before any
-                # request was even attempted this round -- there are no
+                # request was even attempted this round, so there are no
                 # per-request outcomes to look at, so every pending entry
                 # shares this one cause.
                 last_exc = exc
@@ -533,7 +533,7 @@ class LLMGateway:
             # complete_batch_settled() hands every member the *same*
             # exception object (see base.py). Deduplicating by identity here
             # makes the breaker and failure counter see that as the one
-            # attempt it actually was, instead of N -- otherwise one failed
+            # attempt it actually was, instead of N. Otherwise one failed
             # 8-request batch call could trip a breaker sized for 5
             # consecutive failures by itself. A fan-out provider never
             # shares an exception object between entries, so each of its
@@ -576,7 +576,7 @@ class LLMGateway:
                     reservation = reservations.pop(id(entry), None)
                     if reservation is not None:
                         # Settle with what the call actually cost, not the
-                        # worst-case estimate reserve() held -- this is what
+                        # worst-case estimate reserve() held. This is what
                         # frees an over-reservation's slack back to the
                         # ledger for the next request.
                         reservation.settle(
@@ -591,7 +591,7 @@ class LLMGateway:
 
             # retryable is non-empty only because at least one iteration of
             # the loop above hit the isinstance(result, Exception) branch,
-            # which always sets last_exc first -- so this is never None here.
+            # which always sets last_exc first, so this is never None here.
             assert last_exc is not None
             self.metrics.record_retry(provider.name)
             delay = self.retry.delay_for(attempt, self.retry.retry_after_from(last_exc))

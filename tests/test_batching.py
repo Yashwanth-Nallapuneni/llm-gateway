@@ -154,7 +154,7 @@ async def test_deadline_already_passed_flushes_without_another_wait():
 
 async def test_batch_does_not_mix_capability_requirements():
     """One logprobs request must not drag fifteen others onto a strict
-    provider -- that silently destroys the point of having a provider mix."""
+    provider. That silently destroys the point of having a provider mix."""
     q = RequestQueue()
     b = Batcher(max_batch_size=16, max_wait_ms=30, in_flight=lambda: 1)
 

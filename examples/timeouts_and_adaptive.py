@@ -4,7 +4,7 @@ Run:  python examples/timeouts_and_adaptive.py
 
 MockClient is set up to return a 429 on the first two calls and then behave.
 With adaptive=True, the gateway halves its request rate the moment it sees a
-429 and creeps back up as calls succeed -- useful for a provider (like
+429 and creeps back up as calls succeed, which is useful for a provider (like
 OpenRouter) that doesn't send rate-limit headers to sync from. Each request
 also carries a short timeout_s, so a request that fails to get a response in
 time is reported as a timeout instead of hanging the run.

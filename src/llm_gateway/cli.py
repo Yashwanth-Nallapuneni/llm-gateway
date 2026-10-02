@@ -8,7 +8,7 @@ goes to stderr by default so `--output -` piping stays clean.
 
 Kept thin on purpose: this module parses arguments, builds an `LLMGateway`
 from the library's own public constructors, and formats results. It adds no
-new behaviour of its own -- the guarantees (order preservation, per-request
+new behaviour of its own: the guarantees (order preservation, per-request
 failure isolation, metrics) all come from the library.
 """
 
@@ -51,7 +51,7 @@ class CliError(Exception):
     """A usage or configuration problem: report it and exit(2), no traceback.
 
     Distinguished from a per-prompt provider failure (which is reported as an
-    error line in the output and does not abort the run) -- a CliError means
+    error line in the output and does not abort the run), so a CliError means
     the run never got a fair chance to start at all.
     """
 
@@ -115,7 +115,7 @@ def _parse_txt_lines(lines: Iterable[str]) -> list[PromptItem]:
 
 
 def read_input(path: str) -> list[PromptItem]:
-    """Read prompts from a `.jsonl` file, a `.txt` file, or stdin (`-`).
+    """Read prompts from a `.jsonl` file, a `.txt` file or stdin (`-`).
 
     `.jsonl`: one JSON object per line, `{"prompt": ...}` plus optional
     `id`/`max_tokens`/`priority`/`needs_logprobs`/`needs_strict_json`/`model`.
@@ -205,7 +205,7 @@ def build_provider(
     env var and (optionally) its own model from --model.
 
     `dry_run` means no network call will ever be made for this provider (see
-    `--dry-run`), so a missing API key is not fatal -- a placeholder is used
+    `--dry-run`), so a missing API key is not fatal: a placeholder is used
     instead, purely so the provider object can be built for cost estimation.
     `multi` means more than one --provider was given, which changes what a
     couple of error messages should say (--api-key doesn't apply, and
@@ -298,7 +298,7 @@ def build_request(item: PromptItem, args: argparse.Namespace) -> LLMRequest:
         kwargs["max_tokens"] = max_tokens
     # args.model is a per-provider map ("groq=x,openrouter=y") when more than
     # one --provider is given, and is not a sensible per-request override in
-    # that case -- each provider already got its own model in build_provider.
+    # that case, since each provider already got its own model in build_provider.
     single_provider = "," not in args.provider
     model = item.model or (args.model if single_provider else None)
     if model is not None:
@@ -324,7 +324,7 @@ def estimate(
 ) -> tuple[int, float, str]:
     """Token/cost estimate. With more than one provider, cost is the worst
     case: whichever listed provider is most expensive for this workload.
-    Simple and safe -- the real run may end up cheaper if a cheaper
+    Simple and safe: the real run may end up cheaper if a cheaper
     provider serves most of the traffic, never more expensive than this."""
     total_tokens = 0
     input_tokens = 0
@@ -348,7 +348,7 @@ def _confirm_cost(
 
     Always runs unless `--yes` is given. When stdin is not a TTY there is no
     way to prompt, and proceeding silently is exactly the "skip it
-    accidentally" failure mode this guard exists to prevent -- so a
+    accidentally" failure mode this guard exists to prevent, so a
     non-interactive run without `--yes` is refused outright rather than
     auto-confirmed. `--quiet` only silences the acknowledgement line for the
     `--yes` case; it never skips the interactive prompt or the refusal above.
@@ -356,7 +356,7 @@ def _confirm_cost(
     if assume_yes:
         if not quiet:
             print(
-                f"estimated cost: ${cost:.4f} ({provider_name}) -- proceeding (--yes)",
+                f"estimated cost: ${cost:.4f} ({provider_name}); proceeding (--yes)",
                 file=sys.stderr,
             )
         return
@@ -412,7 +412,7 @@ async def _submit_one(
 class _Progress:
     """A single self-overwriting progress line on stderr.
 
-    Only active when stderr is a real terminal -- writing carriage-return
+    Only active when stderr is a real terminal, since writing carriage-return
     updates to a file or a pipe would just leave junk in the output, so this
     is a no-op whenever `stream.isatty()` is false. Updates are throttled to
     a few times a second so a fast run doesn't spend its time repainting a
@@ -472,7 +472,7 @@ async def run_gateway(
     store: RunStore | None = None
     if args.store is not None:
         # Opening the file (and reclaiming any `in_flight` rows a previous
-        # crashed run left behind -- see store.py) is a few quick sqlite
+        # crashed run left behind; see store.py) is a few quick sqlite
         # statements, done once before any provider call, so it costs
         # nothing a real sweep would notice.
         store = RunStore(args.store)
@@ -715,7 +715,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Path to a SQLite file recording every prompt's outcome. With this "
             "set, a prompt already completed in that file is served from it "
-            "instead of calling the provider again -- crash the run and rerun "
+            "instead of calling the provider again. If a run crashes, rerun "
             "the same command to pick up where it left off."
         ),
     )
@@ -754,7 +754,7 @@ def _check_store_flags(args: argparse.Namespace) -> None:
     """`--resume` only means something alongside `--store`, and an existing,
     non-empty store file is ambiguous without it: is this run meant to
     continue that sweep, or did it just reuse a stale path by accident? A
-    fresh or absent path needs no confirmation -- there is nothing yet to
+    fresh or absent path needs no confirmation, since there is nothing yet to
     collide with.
     """
     if args.resume and args.store is None:
@@ -813,7 +813,7 @@ def _run_command(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
         if any_paid:
             if len(providers) > 1:
                 print(
-                    f"estimated cost: ${cost:.4f} (worst case -- assumes every "
+                    f"estimated cost: ${cost:.4f} (worst case: assumes every "
                     f"prompt goes to the most expensive listed provider, {worst_name!r})",
                     file=err,
                 )

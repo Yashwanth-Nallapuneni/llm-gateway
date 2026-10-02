@@ -48,7 +48,7 @@ async def test_generous_budget_completes_normally_and_ledger_matches_cost():
     assert budget.spent > 0
     assert budget.outstanding_count == 0
     # The ledger settles with exactly the cost the metrics sink recorded for
-    # every successful call -- both are computed the same way, from the same
+    # every successful call; both are computed the same way, from the same
     # actual input/output token counts, just recorded into two different
     # places.
     metrics_cost = sum(m.cost for m in gw.metrics._providers.values())
@@ -66,7 +66,7 @@ async def test_tight_budget_stops_the_run_without_exceeding_the_limit():
     # 100/1000 * 1.0 == 0.10.
     price = provider.estimated_cost(0, 100)
     n = 10
-    # Room for three reservations, not four -- some requests must succeed,
+    # Room for three reservations, not four, so some requests must succeed,
     # the rest must be turned away.
     budget = BudgetLedger(price * 3.5)
     gw = LLMGateway(
@@ -156,7 +156,7 @@ async def test_cache_hit_consumes_no_budget(tmp_path):
     assert second.text == first.text
     assert gw.served_from_store == 1
     assert gw.freshly_called == 1
-    # The second call was served entirely from the store -- no reservation,
+    # The second call was served entirely from the store: no reservation,
     # no settlement, nothing added to the ledger.
     assert budget.spent == pytest.approx(spent_after_first)
     assert budget.outstanding_count == 0
@@ -191,7 +191,7 @@ async def test_settle_with_actual_usage_frees_reservation_slack():
     worst_case = provider.estimated_cost(0, 1000)  # == 1.0
     actual = provider.estimated_cost(0, 32)  # == 0.032, what the call really costs
 
-    # Room for one worst-case reservation plus a bit of slack -- not two.
+    # Room for one worst-case reservation plus a bit of slack, not two.
     # Two full worst-case reservations held at once would not fit; the
     # second request only succeeds because the first settled down to its
     # real, much smaller cost first.

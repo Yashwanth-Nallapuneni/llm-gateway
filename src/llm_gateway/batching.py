@@ -21,7 +21,7 @@ def _capability_key(req: LLMRequest) -> tuple[bool, bool]:
 
 
 class Batcher:
-    """Coalesce queued requests into batches on size, tokens, or time."""
+    """Coalesce queued requests into batches on size, tokens or time."""
 
     def __init__(
         self,
@@ -48,7 +48,7 @@ class Batcher:
 
         batch = [first]
         # An estimate, not an exact count, based on prompt size plus
-        # max_tokens -- counting the prompt alone would overflow as soon as
+        # max_tokens, since counting the prompt alone would overflow as soon as
         # a batch of short prompts asks for long completions.
         total_tokens = first.request.estimated_total_tokens()
         key = _capability_key(first.request)
@@ -61,16 +61,16 @@ class Batcher:
         # each new arrival. Re-anchoring on every arrival would mean a
         # steady trickle of requests keeps resetting the timer and the
         # oldest request never gets flushed. Note enqueued_at is in seconds
-        # and max_wait_ms is in milliseconds -- mixing the two silently
+        # and max_wait_ms is in milliseconds, and mixing the two silently
         # makes the wait 1000x too long.
         deadline = first.enqueued_at + (self.max_wait_ms / 1000.0)
 
         while True:
             # Three independent limits, any one of which can end the batch:
             # size (the provider's per-call limit), tokens (the context
-            # window and TPM budget), and time (latency). A longer
+            # window and TPM budget) and time (latency). A longer
             # max_wait_ms fills bigger, more efficient batches at the cost
-            # of worse latency per request -- there's no one right value,
+            # of worse latency per request, and there's no one right value,
             # it depends on whether the caller wants fast replies or high
             # throughput.
             if len(batch) >= self.max_batch_size:

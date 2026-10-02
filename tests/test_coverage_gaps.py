@@ -3,7 +3,7 @@
 Each test here exists to close a specific coverage gap found by running
 `pytest --cov=llm_gateway --cov-report=term-missing`: negative-value guards,
 provider-factory callback chaining, HTTP transport failures on a secondary
-code path, and queue/rate-limit edge cases. Entirely offline and
+code path and queue/rate-limit edge cases. Entirely offline and
 deterministic.
 """
 
@@ -26,7 +26,7 @@ def make_client(handler, *, base_url: str = "https://example.test/v1", **kwargs)
 
 
 # --------------------------------------------------------------------------
-# budget.py -- negative-value guards on settle
+# budget.py: negative-value guards on settle
 # --------------------------------------------------------------------------
 
 
@@ -35,7 +35,7 @@ def test_settle_rejects_negative_actual_usd():
     r = ledger.reserve(1.0)
     with pytest.raises(ValueError, match="actual_usd must be >= 0"):
         r.settle(-1.0)
-    # The reservation is still open -- the rejected settle must not have
+    # The reservation is still open, so the rejected settle must not have
     # mutated the ledger.
     assert ledger.outstanding_count == 1
     r.release()
@@ -64,7 +64,7 @@ def test_remaining_tokens_never_goes_negative_when_overcommitted():
 
 
 # --------------------------------------------------------------------------
-# gateway.py -- construction guard
+# gateway.py: construction guard
 # --------------------------------------------------------------------------
 
 
@@ -74,7 +74,7 @@ def test_gateway_requires_at_least_one_provider():
 
 
 # --------------------------------------------------------------------------
-# providers/openrouter.py -- user on_headers callback is chained
+# providers/openrouter.py: user on_headers callback is chained
 # --------------------------------------------------------------------------
 
 
@@ -114,7 +114,7 @@ async def test_openrouter_user_supplied_on_headers_is_chained():
 
 
 # --------------------------------------------------------------------------
-# providers/http.py -- list_models transport failures
+# providers/http.py: list_models transport failures
 # --------------------------------------------------------------------------
 
 
@@ -149,7 +149,7 @@ async def test_list_models_transport_error_maps_to_provider_error():
 
 
 # --------------------------------------------------------------------------
-# providers/http.py -- _error_message fallback branches
+# providers/http.py: _error_message fallback branches
 # --------------------------------------------------------------------------
 
 
@@ -196,7 +196,7 @@ async def test_error_message_falls_back_to_raw_text_when_not_json():
 
 
 # --------------------------------------------------------------------------
-# providers/http.py -- complete_batch sequential fallback
+# providers/http.py: complete_batch sequential fallback
 # --------------------------------------------------------------------------
 
 
@@ -230,7 +230,7 @@ async def test_complete_batch_sequential_fallback_preserves_order():
 
 
 # --------------------------------------------------------------------------
-# providers/mock.py -- injected rate limit
+# providers/mock.py: injected rate limit
 # --------------------------------------------------------------------------
 
 
@@ -242,7 +242,7 @@ async def test_mock_client_enforces_its_own_rpm_limit():
 
 
 # --------------------------------------------------------------------------
-# queue.py -- pop() edge cases
+# queue.py: pop() edge cases
 # --------------------------------------------------------------------------
 
 

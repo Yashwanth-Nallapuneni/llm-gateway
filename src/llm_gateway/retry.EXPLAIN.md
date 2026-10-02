@@ -64,7 +64,7 @@ hammering a service that is trying to recover. This is the thundering herd, and
 backoff without jitter causes it rather than preventing it.
 
 **Full jitter** (`uniform(0, delay)`) is what this module uses. It is
-stateless, pure (so `delay_for` is trivially testable), and it minimizes the
+stateless, pure (so `delay_for` is trivially testable) and it minimizes the
 probability that two clients pick the same moment. The cost is high variance:
 an unlucky client may retry almost immediately. That is acceptable here because
 the cap and the attempt budget bound the total damage.

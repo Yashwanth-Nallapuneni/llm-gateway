@@ -1,4 +1,4 @@
-# Publishes aiollm-gateway to PyPI using PyPI Trusted Publishing (OIDC) — no
+# Publishes aiollm-gateway to PyPI using PyPI Trusted Publishing (OIDC), so no
 # API token is stored in this repo.
 #
 # One-time setup, before the first tagged release (do this on pypi.org, not here):

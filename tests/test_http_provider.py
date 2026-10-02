@@ -1,4 +1,4 @@
-"""Tests for the HTTP provider layer -- entirely offline via httpx.MockTransport.
+"""Tests for the HTTP provider layer: entirely offline via httpx.MockTransport.
 
 No network access anywhere in this file. Every httpx.AsyncClient is built on
 a MockTransport whose handler is a plain Python function, so these tests run
@@ -205,7 +205,7 @@ async def test_finish_reason_absent_yields_none_without_raising():
 async def test_reasoning_model_trap_distinguishable_from_legitimate_empty_answer():
     """A reasoning model starved of max_tokens returns content: "" with
     finish_reason: "length". That must be distinguishable from a model that
-    legitimately produced nothing and stopped normally -- this is the whole
+    legitimately produced nothing and stopped normally. This is the whole
     point of threading finish_reason through at all.
     """
 
@@ -484,7 +484,7 @@ async def test_aclose_does_not_close_injected_client():
 
 async def test_groq_does_not_send_logprobs_params():
     # Groq's capabilities mark supports_logprobs=False, so the router would
-    # never send a needs_logprobs request here in practice -- but the
+    # never send a needs_logprobs request here in practice, but the
     # adapter itself must not silently inject logprobs params if asked
     # directly, since Groq's API rejects them.
     def handler(request: httpx.Request) -> httpx.Response:
@@ -589,7 +589,7 @@ async def test_openrouter_402_out_of_credit_is_not_retryable():
 async def test_openrouter_402_notifies_headers_exactly_once():
     """Regression test: OpenRouterClient._raise_for_status used to call
     _notify_headers a second time for a 402, on top of the call complete()
-    already makes for every response -- double-invoking on_headers (and
+    already makes for every response, double-invoking on_headers (and
     therefore the limiter's sync_from_headers) for the same response."""
     calls: list[Mapping[str, str]] = []
 
